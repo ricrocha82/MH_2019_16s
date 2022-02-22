@@ -114,7 +114,7 @@ sources:
 ```{r bathymetry}
 #Here, I load a map with the sf package.
 setwd("~/R/geo_data_mh")
-bath_file <- "~/R/git_hub/geo_data_mh/MH_Bathymetry.zip"
+bath_file <- "~/R/git_hub/geo_data_mh/MH_Bathymetry.zip" 
 # load bathymetry
 unzip(bath_file)
 shpdata_bath_mh <- read_sf("SeamapTAS_contours_5mLine.shp")
