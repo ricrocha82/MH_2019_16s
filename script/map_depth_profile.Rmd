@@ -1,0 +1,659 @@
+---
+title: "map_depth_profile"
+author: "Ricardo Silva"
+date: "6/15/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+	fig.height = 5,
+	fig.width = 8,
+	dpi = 180,
+	message = FALSE,
+	warning = FALSE,
+	cache = TRUE,
+	echo = TRUE
+)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+Need to start a new session to run this script due to gstat conflicts with other packages
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+# load the packages
+# main packs to start with
+pcks <- c("gstat", 'tidyverse', "directlabels", "sf", "stars", "viridis", "ggsn", "patchwork")
+
+
+if(sum(as.numeric(!pcks %in% installed.packages())) != 0){
+  installation <- pcks[!pcks %in% installed.packages()]
+  for(i in 1:length(installation)) {
+    install.packages(installation, dependencies = T)
+    break()}
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+} else {
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+}
+
+rm(pcks)
+```
+
+```{r packages and functions}
+# set working directory and seed
+setwd("~/R/git_hub/MH_2019/data")
+folder_path <- "~/R/git_hub/MH_2019/output/"
+
+source('~/R/git_hub/MH_2019/script/my_functions.R')
+source('~/R/git_hub/MH_2019/script/theme_publication.R')
+theme_set(theme_Publication_3())
+
+# # set colors
+# color_distance <- c("D0" = "deepskyblue2", 'D1' = 'brown1',  "D2" = "forestgreen", "D3" = "#440154FF", "D4" = "burlywood")
+# # color_distance1 <- c('D1' = 'brown1',  "D2" = "forestgreen", "D3" = "#440154FF", "D4" = "burlywood")
+# color_depth <- c('DP1'="darkorange",'DP2'="purple", "DP3" = "cyan4")
+# color_sites <- c(lease_1 = "#56B4E9", lease_2 ="#E69F00"  , Control =  "#009E73", other_leases = "#D1BCA8")
+
+# check the working directory
+current_directory <- getwd()
+paste("Working in directory:", current_directory)
+```
+
+
+```{r data}
+# Data preparation 
+## meta data
+meta <- read_csv(paste0(getwd(),"/meta_impute.csv"))
+
+# filter only surface data and remove any rows with missing data
+meta_surf <- meta %>% 
+  filter(Depth == "DP1") 
+
+meta %>% 
+  filter(Depth == "DP1") %>% 
+  plotly::plot_ly(x = ~long, y = ~lat,
+                  color = ~Distance,
+                  text = ~sample_id,
+                  marker = list(size = ~oxygen, opacity = 0.5)) 
+
+meta %>% 
+  filter(Depth == "DP1") %>% 
+  ggplot(aes(x = long, y = lat, color = NOX)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_gradientn(colors = c("blue", "yellow", "red")) +
+  ggrepel::geom_text_repel(aes(label=sample_id)) +
+  theme_minimal()
+
+
+```
+
+sources:
+<https://keen-swartz-3146c4.netlify.app>
+<https://swilke-geoscience.net/post/spatial_interpolation/>
+<https://rspatial.org/raster/analysis/4-interpolation.html>
+<https://r-spatial.github.io/sf/>
+
+```{r bathymetry}
+#Here, I load a map with the sf package.
+setwd("~/R/geo_data_mh")
+bath_file <- "~/R/git_hub/geo_data_mh/MH_Bathymetry.zip"
+# load bathymetry
+unzip(bath_file)
+shpdata_bath_mh <- read_sf("SeamapTAS_contours_5mLine.shp")
+# load MH boundaries
+tas_file <- "~/R/git_hub/geo_data_mh/tasstatepolygon.zip"
+unzip(tas_file)
+shpdata_tas <- read_sf("TAS_STATE_POLYGON_shp.shp")
+# load leases
+lease_file <- "~/R/git_hub/geo_data_mh/aquaculture_leases.zip"
+unzip(lease_file)
+shpdata_lease <- read_sf("Aquaculture-Marinelease.shp")
+
+setwd("~/R/git_hub/MH_2019/data/")
+
+```
+
+# shapefiles
+
+```{r shapefiles}
+# convert into an sf object
+crs = st_crs("EPSG:4326") #EPSG:WGS84
+crs$proj4string
+meta.sf = meta_surf %>% 
+  st_as_sf(coords = c("long", "lat"), crs = "+proj=longlat +ellps=GRS80") %>%
+  st_transform(crs)
+
+controls <- meta.sf %>% filter(Cag_Cont == "Control")
+
+# transform the CRS using spTransform and specify the correct CRS (in this case is EPSG:WGS84 (+proj=longlat +datum=WGS84))
+tas <- st_transform(shpdata_tas, crs)
+bath <- st_transform(shpdata_bath_mh, crs)
+lease <- st_transform(shpdata_lease, crs)
+lease1 <- lease %>% filter(cid == 1445758) %>% add_column(site = "lease_1")
+lease2 <- lease %>% filter(cid == 993728) %>% add_column(site = "lease_2")
+lease <- lease %>% filter(cid != 993728 & cid != 1445758) %>% add_column(site = "other_leases")
+# make a SpatialPolygons object which defines a bounding box inside which to crop the world map polygons.
+# make the bounding box called clipper_MH
+#clipper_MH <- st_bbox(c(xmin= 145, ymin= -42.55, xmax= 145.7, ymax= -42.1),  crs = st_crs(4326))
+clipper_MH <- st_bbox(c(xmin= 145.2, ymin= -42.5, xmax= 145.55, ymax= -42.15),  crs = st_crs(4326))
+#clipper_MH <- as(extent(145, 145.7, -42.55, -42.1), "SpatialPolygons") # (min_longitude, max_longitude, min_latitude, max_latitude)
+#clipper_MH <- st_as_sf(clipper_MH)
+
+clipper_MH <- st_as_sfc(clipper_MH) # Convert foreign object to an sf object
+
+#  crop the object to the extent of a bounding box, using intersect():
+shpdata_MH_clip <- st_crop(tas,  clipper_MH)
+
+```
+
+# MH maps
+
+```{r plot maps}
+# annotated map of Tasmania
+tasmania_map <- ggplot() + 
+  geom_sf(data = tas, color = "darkblue", fill = "white") +
+  coord_sf(xlim = c(143.8, 148.3), ylim = c(-43.5,-39.7))  +
+  # add name
+  annotate('text', x=146.7, y=-42, label = 'Tasmania') + 
+  # ad a rectangle in the Tas map 
+  annotate("rect", xmin = 145 , xmax = 145.7, ymin = -42.55, ymax = -42.1, 
+           fill = NA, colour = 'red') +
+  theme_void()
+  # change legens and axis
+  # theme(panel.background = element_rect(fill = NA),
+  #        # remove axis
+  #       axis.text = element_blank(),
+  #       axis.line = element_blank(),
+  #       axis.ticks = element_blank(),
+  #       #panel.border = element_blank(),
+  #       #panel.grid = element_blank(),
+  #       axis.title = element_blank(),
+  #       plot.margin = margin(0,0,0,0, 'cm'))
+
+
+# MH map
+MH_map <- ggplot() + 
+    geom_sf(data = shpdata_MH_clip)  + 
+    labs(x = "Long", y = "Lat") +
+    theme_minimal() +
+  # add north arrow and scale bar to the plot
+    north(shpdata_MH_clip, location =  "topleft") +
+    scalebar(shpdata_MH_clip, dist = 5, dist_unit = "km", st.size = 3,
+             transform = TRUE, model = "WGS84", border.size = 0.5, height = 0.01) +
+   theme_Publication_3() +
+   theme(axis.text.x = element_text(angle = 45)) 
+
+# bathymetry
+map_MH_bath <- MH_map + 
+  geom_sf(data = bath, alpha = 0.5, aes(color = CONTOUR)) +
+  scale_color_viridis() +
+  labs(color = "Depth (m)")
+
+# sites
+samples <- bind_rows(lease1, lease2, controls, lease)
+
+map_sites <- MH_map + 
+  geom_sf(data = samples, alpha = 0.8, aes(color = site, fill = site)) +
+  scale_fill_manual(values = color_sites ,
+                     labels = c('Lease 1', 'Lease 2', 'Control', "other leases"),
+                    name = "Sites") +
+  scale_color_manual(values = color_sites ,
+                     labels = c('Lease 1', 'Lease 2', 'Control', "other leases"),
+                      name = "Sites")
+  
+
+#scales::show_col('#E69F00')
+
+map1 <- MH_map + 
+  inset_element(tasmania_map , 0.6, 0.6, 1, 1) 
+
+ggsave(paste0(folder_path,"/output/plots/map_MH_1.tiff"), map1, compression = "lzw")
+ggsave(paste0(folder_path,"/output/plots/map_MH_bath.tiff"), map_MH_bath, compression = "lzw") #-> if it crashes the session, problem with ragg package. Please uninstall 
+
+# MH map with samples
+MH_map +  
+  geom_sf(data = meta.sf, mapping = aes(col = salinity)) +
+  labs(x = "Long", y = "Lat")
+
+#  geom_sf_text(data = meta.sf, aes(label = sample_id), check_overlap = T) +
+ # directlabels::geom_dl(data = meta_surf, aes(long, lat, label=sample_id), method = list("top.bumpup", cex = .7, fontface = "bold", family = "Helvetica")) 
+map2 <- map_sites + 
+    theme(
+    legend.position = c(.25, .29),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6),
+    legend.text=element_text(size=rel(1.2)),
+    legend.title=element_text(size=rel(1.2)),panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          plot.background = element_blank(), 
+          panel.background = element_blank(),
+         legend.background =  element_blank()
+    ) +
+  inset_element(tasmania_map , 0.6, 0.6, 1, 1.05, align_to = 'full') 
+
+
+map3 <- map_labels +  geom_sf(data = bath, alpha = 0.5, aes(color = CONTOUR)) +
+  scale_color_viridis() +
+  labs(color = "Depth (m)")  + 
+  inset_element(tasmania_map , 0.6, 0.6, 1, 1) 
+
+ggsave(paste0(folder_path,"/plots/map_MH_sites.tiff"), width = 15, height = 10 , map2, compression = 'lzw')
+ggsave(paste0(folder_path,"/plots/map_MH_labels_bath.tiff"), width = 15, height = 10 , map3, compression = 'lzw')
+```
+
+# zoom in 
+
+```{r}
+# Lease 1
+meta.lease1 = meta_surf %>% 
+  filter(site == "lease_1") %>%
+  st_as_sf(coords = c("long", "lat"), crs = "+proj=longlat +ellps=GRS80") %>%
+  st_transform(crs) %>% 
+  mutate(Distance = case_when(Distance == "D0" ~ "Cage",
+                              TRUE ~ "Samples"))
+
+MH_map_lease1 <- ggplot() + 
+    geom_sf(data = lease1, alpha = 0.4, fill= "#56B4E9")  + 
+        geom_sf(data = meta.lease1,  aes(color = Distance)) +
+    labs(x = "Long", y = "Lat") +
+    theme_minimal() +
+    scale_color_manual(values = c("Cage" = "red", "Samples" = 'grey50')) +
+  # add north arrow and scale bar to the plot
+    north(lease1, location =  "topleft") +
+    scalebar(lease1, dist = 100, dist_unit = "m", st.size = 2,
+             transform = TRUE, model = "WGS84", border.size = 0.5, height = 0.01) +
+   theme_Publication_3()  +
+   theme(axis.text = element_blank(),
+         axis.title = element_blank(),
+         legend.title = element_blank(),
+          legend.position = c(.90, 1),
+          legend.justification = c("right", "top"),
+          legend.box.just = "right",
+          legend.margin = margin(6, 6, 6, 6),
+      #    legend.text=element_text(size=rel(1.2)),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          plot.background = element_blank(), 
+          panel.background = element_blank(),
+         legend.background =  element_blank()) 
+
+# Lease 2
+meta.lease2 = meta_surf %>% 
+  filter(site == "lease_2") %>%
+  st_as_sf(coords = c("long", "lat"), crs = "+proj=longlat +ellps=GRS80") %>%
+  st_transform(crs)  %>% 
+  mutate(Distance = case_when(Distance == "D0" ~ "Cage",
+                              TRUE ~ "Samples"))
+
+MH_map_lease2 <- ggplot() + 
+    geom_sf(data = lease2, alpha = 0.4, fill= "#E69F00")  + 
+    geom_sf(data = meta.lease2, aes(color = Distance)) +
+    labs(x = "Long", y = "Lat") +
+    scale_color_manual(values = c("Cage" = "red", "Samples" = 'grey50')) +
+  # add north arrow and scale bar to the plot
+    north(lease2, location =  "topleft") +
+    scalebar(lease2, dist = 100, dist_unit = "m", st.size = 2,
+             transform = TRUE, model = "WGS84", border.size = 0.5, height = 0.01) +
+   theme_Publication_3() +
+   theme(axis.text = element_blank(),
+         axis.title = element_blank(),
+         legend.title = element_blank(),
+          legend.position = c(.90, 1),
+          legend.justification = c("right", "top"),
+          legend.box.just = "right",
+          legend.margin = margin(6, 6, 6, 6),
+         # legend.text=element_text(size=rel(1.2)),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          plot.background = element_blank(), 
+          panel.background = element_blank(),
+         legend.background =  element_blank()) 
+
+
+maps_lease <- cowplot::plot_grid(MH_map_lease1, MH_map_lease2, ncol = 1)
+map_all <- cowplot::plot_grid(map2, maps_lease, ncol = 2)
+ggsave(paste0(folder_path,"/plots/map_MH_sites.tiff"), width = 15, height = 10 , map_all , compression = 'lzw')
+
+```
+
+
+```{r interactive map}
+# Using mapview for an interactive map
+mapview::mapview(lease)
+
+```
+
+
+```{r interpolation}
+# Create a grid template and rasterize:
+to_crop <- st_bbox(c(xmin= 145.2, 
+                     ymin= -42.44, 
+                     xmax= 145.55, 
+                     ymax= -42.15),  
+                   crs = st_crs(4326)) %>% st_as_sfc() 
+  
+grd <- clipper_MH  %>% 
+  st_as_stars() %>%
+  st_crop(to_crop)
+
+# reduce the plot area
+shpdata_MH_clip_plot <- st_crop(tas, to_crop)
+
+MH_map <- ggplot() + 
+    geom_sf(data = shpdata_MH_clip_plot)  + 
+    labs(x = "Long", y = "Lat") +
+    theme_minimal() +
+  # add north arrow and scale bar to the plot
+    north(shpdata_MH_clip_plot, location =  "topleft") +
+    scalebar(shpdata_MH_clip_plot, dist = 5, dist_unit = "km", st.size = 3,
+             transform = TRUE, model = "WGS84", border.size = 0.5, height = 0.01) +
+   theme_Publication_3() +
+   theme(axis.text.x = element_text(angle = 45)) 
+
+# interpolation
+# fit models
+# Inverse Distance Weighting
+# map all env parameters with purrr
+env_par <- c("DO","Salinity","Temperature", "Carbon", "Nitrogen", "CN", "TSSmean", "AOB_copies", "AOA_copies", "nosZ_copies", "Shannon_bac", "Chao1_bac") 
+idw_list <- env_par %>% 
+  set_names() %>%
+  map(., ~gstat::idw(as.formula(paste(., "~ 1")), meta.sf, grd))
+
+# plot each interpolation
+plot.list.int <- idw_list %>% 
+  map2(., names(idw_list), ~
+         ggplot() +
+         geom_stars(data = .x, aes(fill = var1.pred, x = x, y = y)) + 
+         geom_sf(data = shpdata_MH_clip_plot) + 
+         geom_sf(data = meta.sf) +
+         scale_fill_viridis() +
+         labs(fill = paste0(.y)) +
+         theme(axis.text = element_blank(),
+               axis.title = element_blank(),
+               axis.ticks.x=element_blank()) +
+         theme_void() # get rid of everything
+       )
+
+# name each plot to be saved
+plotnames = map(names(plot.list.int), ~paste0("interpolation_",., ".tiff"))
+```
+
+
+```{r plot interpolation}
+# ggsave with purrr
+#walk2(plotnames, plot.list.int, ~ggsave(filename = .x, plot = .y))
+
+plots <- wrap_plots(plot.list.int)
+ggsave(paste0(folder_path,"/output/plots/new_submission_compressed/interpolation.tiff"), plots, 
+       width = 16, height = 10 , 
+       compression = "lzw",
+       device = "tiff")
+
+```
+
+
+```{r depth profile}
+# nutrients
+depth_profile_plot <- meta %>% 
+        dplyr::select(Depth, DO, Salinity, Temperature, Carbon, Nitrogen, CN, TSSmean, AOB_copies, AOA_copies, nosZ_copies, Shannon_bac, Chao1_bac) %>% 
+        mutate(Depth = case_when(Depth == "2mBottom" ~ 30,
+               TRUE ~ as.numeric(Depth))) %>%
+        pivot_longer(!Depth, 
+                     names_to = 'variable',values_to = 'value' ) %>%
+        mutate(variable = fct_relevel(variable , c("DO","Salinity","Temperature", "Carbon", "Nitrogen", "CN", "TSSmean", "AOB_copies", "AOA_copies", "nosZ_copies"))) %>%
+    #   drop_na() %>%
+        ggplot(aes(Depth, log(value))) +
+        geom_point() +
+        #geom_line(alpha = 0.3) +
+        geom_smooth(se=FALSE, size=0.4, alpha = 1)  +
+      # scale_x_continuous(breaks=c(3, 8, 20, 30)) +
+        scale_x_reverse() +
+        coord_flip() + # geom_line is designed for horizontal plots
+       # facet_grid( variable ~ Distance, scales = "free_x") 
+        facet_wrap(~variable, scales = "free_x")  + 
+        labs(x = "Depth (m)",y = "log(Environmental varibles)") +
+        theme_clean()
+
+ggsave(paste0(folder_path,"/output/plots/new_submission_compressed/depth_profile_plot.tiff"), depth_profile_plot,
+       compression = "lzw")
+```
+
+# Distance from the cages
+
+```{r}
+lease_1 <- meta %>% 
+  filter(Distance == "D0" & site == "lease_1") %>% 
+  select(lat, long) %>% 
+ # slice(1) %>%
+  slice(2)
+  # summarise(lat = mean(lat),
+  #           long = mean(long))
+lease_2 <-  meta %>% 
+  filter(Distance == "D0" & site == "lease_2") %>% 
+  select(lat, long) %>%  
+#  slice(1) %>%
+#  slice(2) %>%
+  slice(3)
+  # summarise(lat = mean(lat),
+  #           long = mean(long))
+
+get_geo_distance = function(long1, lat1, long2, lat2, units = "m") {
+  longlat1 = purrr::map2(long1, lat1, ~c(.x,.y))
+  longlat2 = purrr::map2(long2, lat2, ~c(.x,.y))
+  distance_list = purrr::map2(longlat1, longlat2, ~geosphere::distHaversine(.x, .y))
+  distance_m = purrr::pluck(distance_list, position = 1)
+  if (units == "km") {
+    distance = distance_m / 1000.0 ;
+  }
+  else if (units == "miles") {
+    distance = distance_m / 1609.344
+  }
+  else {
+    distance = distance_m
+    # This will return in meter as same way as distHaversine function. 
+  }
+  return(distance)
+}
+
+dist_cage <- meta %>%
+#  rownames_to_column("sample_id") %>%
+  rowwise() %>%
+  mutate(distance_lease1 = get_geo_distance(long, lat, lease_1$long, lease_1$lat),
+         distance_lease2 = get_geo_distance(long, lat, lease_2$long, lease_2$lat)) %>%
+  select(sample_id, site, Distance, distance_lease1, distance_lease2)
+
+dist_cage %>% group_by(Distance, site) %>%
+  summarize(dist_lease1 = distance_lease1,
+            dist_lease2 = distance_lease2) %>%
+  filter(site == "Control")
+
+dist_cage %>% group_by(Distance, site) %>%
+  summarize(dist_lease1 = distance_lease1,
+            dist_lease2 = distance_lease2) %>%
+  filter(site == "lease_1")
+
+dist_cage %>% group_by(Distance, site) %>%
+  summarize(dist_lease1 = distance_lease1,
+            dist_lease2 = distance_lease2) %>%
+  filter(site == "lease_2") %>% View
+
+# Control - min distance ~ 1800m
+# lease 1 - 
+
+
+
+```
+
+```{r}
+p1 <- meta %>% 
+  select(NH4:PO4, Distance_m, Depth, site) %>%
+  pivot_longer(!c('Distance_m', 'Depth', site), 
+               names_to = 'env_par',values_to = 'value' ) %>%
+  group_by(site, Depth, Distance_m, env_par) %>%
+  summarise(mean= mean(value), sd= sd(value), max = max(value),min = min(value)) %>%
+  ggplot(aes(x= Distance_m, y = mean, group= Depth)) + 
+  geom_line(aes(linetype = Depth, color = Depth, group = interaction(site, Depth))) +
+  geom_point(aes(color = Depth), alpha = 0.4, position = position_jitterdodge(dodge.width = 0.1)) +
+  labs(y = NULL) +
+#  geom_errorbar(aes(ymin = mean - sd, ymax = mean +sd), width = .1, alpha= 0.1) + 
+  facet_wrap(~env_par, scales = 'free_y') +
+  scale_color_manual(values = c(color_depth)) +
+  theme_depth_profile()
+
+```
+
+# 2D Smooth - GAM interpolation
+
+GAM interpolation and analysis. 
+
+```{r function to plot}
+# plotting
+# make a cross table 
+plot.2d <- function(gam.model, env_par){
+p.2d <- crossing(
+  tibble(Distance_m = seq(0, 150, by = 1)),
+  tibble(Depth_m = seq(0, 40, length.out = 100))
+)  %>%
+  mutate(var = predict(gam.model, 
+      newdata = tibble(Distance_m = Distance_m, Depth_m = Depth_m)
+    )
+  ) %>%
+# plot
+  ggplot(aes(Distance_m, Depth_m, fill = var)) +
+  geom_raster(color = var) +
+  scale_y_reverse() +
+  scale_fill_viridis_c() +
+  # scale_fill_gradient2(
+  #   midpoint = mean(env_raster_smooth$var), 
+  #   high = scales::muted("red"), 
+  #   low = scales::muted("blue")
+  # ) +
+  coord_cartesian(expand = FALSE) +
+  labs(fill=glue::glue('{env_par}'))
+return(p.2d)
+}
+```
+
+```{r GAM interpolation}
+# https://fishandwhistle.net/post/2019/depth-time-heatmaps
+meta %>% 
+  select(Distance_m, Depth_m, NH4:PO4, starts_with(c("Chao1", "Shannon"))) %>%
+  pivot_longer(-c(Distance_m, Depth_m), names_to = "env_par", values_to = "value") %>%
+ggplot(aes(x = Distance_m, y = value)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~env_par, scales = "free_y")
+
+# variables to analyze
+env.var <- c('conductivity', 'oxygen', 'salinity','temperature','PAR', 'fluorescence', 'turbidity')
+nuts <- c('NH4','NOX','NO2',"PO4")
+
+# NUTS, SHANNON AND CHAO1
+# transform character columns in factors
+meta <- meta %>% mutate(across(where(is.character), ~as.factor(.)))
+
+# combine predictors into a common smooth function (i.e., interaction)
+# plot and results
+nut.div.2d.list <- meta %>% 
+  select(Distance_m, Depth_m, all_of(c(nuts, env.var)), starts_with(c("Chao1", "Shannon"))) %>%
+  pivot_longer(-c(Distance_m, Depth_m), names_to = "env_par", values_to = "value") %>%
+  nest(data = c(Distance_m, Depth_m, value)) %>% 
+  mutate(model = purrr::map(data, ~gam(value ~ s(Distance_m, Depth_m), data =., method = "REML")),
+         plots = map2(model,env_par,~plot.2d(.x,.y)),
+         results = map(model, glance),
+         pval.term = map_dbl(model, ~ summary(.)$s.pv) ,
+         R.square = map_dbl(model, ~ summary(.)$r.sq),
+         edf = map_dbl(model, ~ summary(.)$edf)) 
+
+all.plots = wrap_plots(nut.div.2d.list$plots, ncol = 2)
+ggsave(paste0(folder_path, "plots/meta/interpolation_gam_nuts_div.tiff"), all.plots, compression = "lzw", width = 11.5, height = 15)
+
+# check results of each model
+results.gam <- nut.div.2d.list %>% 
+  select(env_par, results, pval.term, R.square) %>% 
+  unnest(results)
+
+
+# GAM results
+results <- results.gam %>% 
+  mutate(pval.term = round(pval.term,3)) %>%
+  mutate(pval.term = case_when(pval.term < 0.001 ~ "<0.001",
+                               TRUE ~ as.character(pval.term)))
+
+write_csv(results, paste0(folder_path, "data/env/gam_nuts_div_env.csv"))
+
+gam(NH4 ~ s(Distance_m, k=3)+ s(Depth_m), data =meta, method = "REML")
+
+gam.model <- meta %>% 
+  select(Distance_m, Depth_m, all_of(c(nuts, env.var)), starts_with(c("Chao1", "Shannon"))) %>%
+  pivot_longer(-c(Distance_m, Depth_m), names_to = "env_par", values_to = "value") %>%
+  nest(data = c(Distance_m, Depth_m, value)) %>% 
+  mutate(model = purrr::map(data, ~gam(value ~ s(Distance_m, k=3)+ s(Depth_m), data =., method = "REML"))) %>%
+  mutate(results =map(model, glance),
+         pval.term = map(model, ~ summary(.)$s.pv) ,
+         pvalue = map(model, ~ summary(.)$p.pv),
+         R.square = map_dbl(model, ~ summary(.)$r.sq),
+         residuals = map(model, residuals),
+         test = purrr::map(residuals, ~nortest::sf.test(.)[["p.value"]]))
+
+
+meta %>% 
+  dplyr::select(Distance_m, Depth_m, all_of(c(nuts, env.var))) %>%
+  mutate(across(NH4:turbidity, ~log(.x + 1))) %>%
+  mutate(PO4 = case_when(PO4 < 0 ~ 0,
+                         TRUE ~ as.numeric(PO4)))  %>%
+              pivot_longer(names_to="env_par", values_to="value", -c(Distance_m, Depth_m))  %>%
+  nest(data = c(Distance_m, Depth_m, value)) %>% 
+  mutate(model = purrr::map(data, ~gam(value ~ s(Distance_m, k=3)+ s(Depth_m), data =., method = "REML"))) %>%
+  mutate(results =map(model, glance),
+         pval.term = map(model, ~ summary(.)$s.pv) ,
+         pvalue = map(model, ~ summary(.)$p.pv),
+         R.square = map_dbl(model, ~ summary(.)$r.sq),
+         residuals = map(model, residuals),
+         test = purrr::map_dbl(residuals, ~nortest::sf.test(.)[["p.value"]]))
+
+
+gam.model %>% mutate(residuals = map(model, residuals),
+                     test = purrr::map_dbl(residuals, ~round(nortest::sf.test(.)[["p.value"]])))
+
+# Parametric coefficients(intercept)
+gam.model %>%
+  select(env_par, results, pvalue, R.square) %>%
+  unnest(c(results)) %>%
+  unnest(c(pvalue)) %>%
+  ungroup() %>%
+  filter(pvalue <= 0.001)
+
+# Approximate significance of smooth terms
+gam.results <- gam.model %>%
+  select(env_par, results, pval.term, R.square) %>%
+  unnest(c(results)) %>%
+  unnest(c(pval.term)) %>%
+  ungroup() %>%
+  mutate(par = rep(c('Distance_m','Depth_m'), 17)) %>%
+  filter(pval.term <= 0.01)  %>%
+  mutate(whole = str_c(env_par,par, sep = "_"))
+
+# save
+write.csv(gam.results, paste0(folder_path,"data/env/gam_results_distance_and_depth.csv"), row.names = F)
+
+```
