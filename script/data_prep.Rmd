@@ -79,32 +79,20 @@ paste("Working in directory:", current_directory)
 # getting the data and filtering
 
 # OTU tables
-OTUdf_arc <- read.csv("arc_2019.csv",  row.names = 1, head = TRUE)
 OTUdf_bac <- read.csv("bac_2019.csv",  row.names = 1, head = TRUE)
-OTUdf_euk <- read.csv("euk_2019.csv", row.names = 1, header = TRUE)
 
 # check names
-names(OTUdf_arc)
-head(rownames(OTUdf_arc))
 names(OTUdf_bac)
 head(rownames(OTUdf_bac))
-names(OTUdf_euk)
-head(rownames(OTUdf_euk))
 
 OTUdf_euk %>% as_tibble()
 
 # taxonomy table
-TAXdf_arc <- OTUdf_arc %>% select(Kingdom:Genus)
-head(rownames(TAXdf_arc))
 TAXdf_bac <- OTUdf_bac %>% select(Kingdom:Genus)
 head(rownames(TAXdf_bac))
-TAXdf_euk <- OTUdf_euk %>% select(Kingdom:Species)
-head(rownames(TAXdf_euk))
 
 # clean ASV tables
-OTUdf_arc <- OTUdf_arc %>% select(-seq, -c(Kingdom:Genus))
 OTUdf_bac <- OTUdf_bac %>% select(-seq, -c(Kingdom:Genus))
-OTUdf_euk <- OTUdf_euk %>% select(-seq, -c(Kingdom:Feature_id))
 
 # metadata table
 # meta <- read.csv("meta_env.csv", row.names = 1)
@@ -126,34 +114,25 @@ meta %>% pull(dist_depth)
 
 # check if the sample names are the same
 # rownames(meta) %in% names(OTUdf_arc)
-waldo::compare(sort(rownames(meta)), sort(names(OTUdf_arc)))
 waldo::compare(sort(rownames(meta)), sort(names(OTUdf_bac)))
-waldo::compare(sort(rownames(meta)), sort(names(OTUdf_euk)))
 ```
 
 ```{r prep data - tax table}
 # check if there is any NA in the taxa table
-TAXdf_arc %>% map_df(~sum(is.na(.))) # starts at the class level
 TAXdf_bac %>% map_df(~sum(is.na(.))) # starts at the class level
-TAXdf_euk %>% map_df(~sum(is.na(.))) # starts at the class level
-# apply(TAXdf_arc, 2, function(x) any(is.na(x)))
 
 # remove NAs in Kingdom and Phylum
 # TAXdf <- TAXdf %>% drop_na(Kingdom, Phylum)
 # replace NA by unknown
-TAXdf_arc <- TAXdf_arc %>% replace(is.na(.), "unknown")
 TAXdf_bac <- TAXdf_bac %>% replace(is.na(.), "unknown")
-TAXdf_euk <- TAXdf_euk %>% replace(is.na(.), "unknown")
 # check again
-TAXdf_arc %>% map_df(~sum(is.na(.))) # starts at the class level
 TAXdf_bac %>% map_df(~sum(is.na(.))) # starts at the class level
-TAXdf_euk %>% filter(if_any(everything(), ~ is.na(.x))) %>% count
 
 # filter contaminants (i.e. mithocondria)
 TAXdf_bac %>% map_df(~ sum(str_detect(.,"Mitochondria"))) # 343 ASVs at Family level
 TAXdf_bac %>% filter(if_any(everything(), ~str_detect(.,"Mitochondria"))) 
 TAXdf_bac <- TAXdf_bac %>% filter(!str_detect(Family, "Mitochondria"))
-TAXdf_euk %>% map_df(~ sum(str_detect(.,"Mitochondria"))) # no ASV
+
 
 ```
 
@@ -181,118 +160,22 @@ waldo::compare(sort(rownames(meta)), sort(names(otu_fun_MetaCyc)))
 ```
 
 ```{r prep data - phyloseq objects}
-# Archaea
-pseq.arc <- phyloseq(otu_table(as.matrix(as.data.frame(OTUdf_arc)), taxa_are_rows = TRUE),
-                     tax_table(as.matrix(TAXdf_arc)),sample_data(meta))
-
 
 # Bacteria
 pseq.bac <- phyloseq(otu_table(as.matrix(as.data.frame(OTUdf_bac)), taxa_are_rows = TRUE),
                      tax_table(as.matrix(TAXdf_bac)),sample_data(meta))
 
-# Eukaryotes
-pseq.euk <- phyloseq(otu_table(as.matrix(as.data.frame(OTUdf_euk)), taxa_are_rows = TRUE),
-                     tax_table(as.matrix(TAXdf_euk)), sample_data(meta))
-
-#picrsut
+#picrust
 pseq.fun <- phyloseq(otu_table(as.matrix(as.data.frame(otu_fun_MetaCyc)), taxa_are_rows = TRUE),
                      tax_table(as.matrix(tax_fun_MetaCyc)), sample_data(meta))
 
-#pseq_df_bac <- microbiomeutilities::phy_to_ldf(pseq.list[[2]], transform.counts = NULL) # pseq to long format
-```
-
-## Phytoplankton
-
-Here we will split eukaryotic community in phytoplankton and not phytoplankton
-
-Unicellular phytoplanktonic ASVs were separated from other protists (unicellular eukaryotes) for further analysis. The phytoplankton classification was based on Not et al. (2012). ASVs targeted were classified as Alveolata (Dinoflagellata), Archaeplastida (Chlorophyta), Cryptophyta, Haptophyta, Rhizaria (Chlorarachniophyta), and Stramenopiles (Chrysophycea and Ochrophyta). ASVs corresponded to macro-algae were excluded from the analysis (Phaeophyceae, Xanthophyceae)
-
-```{r phytoplankton}
-# pseq.list[[3]] %>%
-#  get_tibble("tax_table") %>%
-# filter(if_any(everything(), ~str_detect(.,'Zearaja')))
-
-# phytoplankton 
-# autotrophics
-phyto.auto <- c("Chlorophyta", 'Cryptophyta', 'Haptophyta', 'Chlorarachniophyta', 'Ochrophyta')
-# mixotrophics, heterotrophics and autotrophics
-phyto.mixo <- c('Dinoflagellata','Chrysophycea')
-macro.algae <- c('Phaeophyceae', 'Xanthophyceae')
-# create a string to subset
-phyto <- str_c(c(phyto.auto, phyto.mixo), collapse = "|")
-
-# filter pseq.object
-tax.phyto <- pseq.euk %>% 
-  get_tibble("tax_table") %>% 
-  filter(if_any(everything(), ~str_detect(.,phyto)))
-
-# get only phytoplankton ASVs 
-otu.euk <- pseq.euk %>%
-  get_tibble("otu_table")
-otu.phyto <- tax.phyto %>% left_join(otu.euk) %>% 
-  select(-c(Kingdom:Species)) %>% column_to_rownames("column_id")
-
-# make a phyloseq object
-tax.phyto.df <- tax.phyto %>% column_to_rownames("column_id") %>% mutate(Kingdom = paste("Phytoplankton"))
-pseq.phyto <- phyloseq(otu_table(as.matrix(as.data.frame(otu.phyto)), taxa_are_rows = TRUE),
-                     tax_table(as.matrix(tax.phyto.df)), sample_data(meta))
-
-# other protists
-tax.not.phyto <- pseq.euk %>% 
-  get_tibble("tax_table") %>% 
-  filter(if_all(everything(), ~!str_detect(.,phyto)))
-
-otu.no.phyto <- tax.not.phyto %>% left_join(otu.euk) %>% 
-  select(-c(Kingdom:Species)) %>% column_to_rownames("column_id")
-
-waldo::compare(tax.phyto$column_id, tax.not.phyto$column_id)
-
-# make a phyloseq object
-tax.not.phyto.df <- tax.not.phyto %>% column_to_rownames("column_id") %>% mutate(Kingdom = paste("Other_Protists"))
-pseq.no.phyto <- phyloseq(otu_table(as.matrix(as.data.frame(otu.no.phyto)), taxa_are_rows = TRUE),
-                     tax_table(as.matrix(tax.not.phyto.df)), sample_data(meta))
-
-# make a list of these phyloseq objects
-pseq.list <- list(pseq.arc,pseq.bac, pseq.euk, pseq.phyto, pseq.no.phyto)
-names(pseq.list) <- c('Archaea', 'Bacteria', "Eukaryotes", "Phytoplankton", "Other_protists")
-
 # Saving on object in RData format
-save(pseq.list, file = "pseq.list.RData")
+save(pseq.bac, file = "pseq.bac.RData")
 save(pseq.fun, file = "pseq.fun.RData")
 
+#pseq_df_bac <- microbiomeutilities::phy_to_ldf(pseq.bac[[2]], transform.counts = NULL) # pseq to long format
 ```
 
-## NA imputation
-
-Missing value imputation was performed using the random forest imputation algorithm from the R package `missForest()`. The algorithm imputes all missing data and for each variable using mean/mode. Then, it fits a RF on the observed part and then predicts the missing part in an iterative process until the best a stopping creterion is met. (Stekhoven & Buhlmann, 2011). MissForest can out-performe other commonly used imputation algorithms available (KNNimpute, MICE, MissPALasso), in some cases reducing the imputation error by more than 50%.
-
-```{r NA imputation RF}
-# variables to analyze
-env.var <- c('conductivity', 'oxygen', 'salinity','temperature','PAR', 'fluorescence', 'turbidity')
-nuts <- c('NH4','NOX','NO2',"PO4")
-# missing value imputation
-# log transform the data for imputation
-meta <- meta %>% rownames_to_column("sample_id")
-meta_log <- meta %>%
-  dplyr::select(Distance_m, Depth_m, all_of(c(nuts, env.var))) %>%
-  mutate(across(NH4:turbidity, ~log(.x + 1)))
-
-# NA imputation
-set.seed(1234)
-impute_meta <- missForest::missForest(as.data.frame(meta_log))
-impute_meta1 <- impute_meta$ximp %>% as.tibble %>% mutate(sample_id = meta$sample_id)
-impute_meta1 <- impute_meta1 %>% left_join(meta %>% select(-where(is.numeric))) %>%
-  relocate(-where(is.numeric), .before = Distance_m)
-
-# get the original data back
-meta_imp <- impute_meta1 %>% 
-  mutate(across(NH4:turbidity, ~exp(.x)-1))
-
-meta %>% filter(Distance == "D1" & Depth == "DP1") %>% select(oxygen, temperature, NH4, NOX)
-meta_imp %>% filter(Distance == "D1" & Depth == "DP1") %>% select(oxygen, temperature, NH4, NOX)
-meta %>% filter(Distance == "D0" & Depth == "DP1") %>% select(oxygen, temperature, NH4, NOX)
-meta_imp %>% filter(Distance == "D0" & Depth == "DP1") %>% select(oxygen, temperature, salinity, NH4, NOX)
-```
 
 ### Filtering and clr transformation
 
@@ -300,22 +183,15 @@ Thus we analyzed this dataset compositionally by first filtering with CodaSeq (m
 
 ```{r prevalence table}
 # Lets generate a prevalence table (number of samples each taxa occurs in) for each taxa.
-prev.list <- pseq.list %>% map(prevalence_table, "Phylum")
-prev.list
-# Remove taxa not seen more than 1 time in at least 10% of the samples. 
-# p.filt = filter_taxa(pseq.list[[4]], function(x) sum(x > 1) > (0.1*length(x)), TRUE)
-# keep taxa seen at least 2 times in at least 2 samples
-# p.filt = filter_taxa(pseq.list[[4]], function(x) sum(x > 2) > 1, TRUE)
-# keep taxa seen at least 3 times across all samples
-# p.filt = prune_taxa(taxa_sums(pseq.list[[4]]) > 5, pseq.list[[4]])
-# remove singletons
-# p.filt = prune_taxa(taxa_sums(pseq.list[[4]] > 1, pseq.list[[4]]) 
+pseq.bac %>% prevalence_table("Phylum")
+
+ 
 ```
 
 ```{r data prep}
 # not filter function dataset
-# pseq.func <- pseq.list %>% pluck("function")
-# pseq.list <- pseq.list %>% list_modify("function" = NULL)
+# pseq.func <- pseq.bac %>% pluck("function")
+# pseq.bac <- pseq.bac %>% list_modify("function" = NULL)
 
 # filtering data and clr-transformation
 # min.prop  = minimum proportion in any sample (default)
@@ -352,39 +228,39 @@ clr.trans <- function(x){
 }
 
 # filtering 
-# pseq.list.filt.0 <- pseq.list %>% map(.,~pseq.filter(.,min.prop = 0))
-# pseq.list.filt <- pseq.list %>% map(.,~pseq.filter(.,min.prop = 0.001))
-pseq.list.filt <- pseq.list %>% map(pseq.filter)
+# pseq.bac.filt.0 <- pseq.bac %>% map(.,~pseq.filter(.,min.prop = 0))
+# pseq.bac.filt <- pseq.bac %>% map(.,~pseq.filter(.,min.prop = 0.001))
+pseq.bac.filt <- pseq.bac %>% pseq.filter
 pseq.func.filt <- pseq.fun %>% pseq.filter
 # samples removed
 # "T1_D1_DP3" and "T1_D2_DP1" for bacteria
 
 # clr transformation
-# pseq.list.0.clr <- pseq.list.filt.0 %>% map(clr.trans)
-pseq.list.clr <- pseq.list.filt %>% map(clr.trans)
+# pseq.bac.0.clr <- pseq.bac.filt.0 %>% map(clr.trans)
+pseq.bac.clr <- pseq.bac.filt %>% clr.trans
 # picrsut pseq
 pseq.func.clr <- pseq.func.filt %>% clr.trans
-# ord <- ordinate(pseq.list.clr[[2]], "RDA", distance = "euclidean")
-# plot_ordination(pseq.list.0.clr[[2]], ord , color = "Depth")
+# ord <- ordinate(pseq.bac.clr[[2]], "RDA", distance = "euclidean")
+# plot_ordination(pseq.bac.0.clr[[2]], ord , color = "Depth")
 
 # relative % abundance for bar plot
-# pseq.list.0.rel <- pseq.list.filt.0 %>% map(.,~transform(.,"compositional"))
-pseq.list.rel <- pseq.list.filt %>% map(.,~transform(.,"compositional"))
+# pseq.bac.0.rel <- pseq.bac.filt.0 %>% map(.,~transform(.,"compositional"))
+pseq.bac.rel <- pseq.bac.filt %>% transform("compositional")
 
 # checking
-table(tax_table(pseq.list[[2]])[,"Phylum"])
-table(tax_table(pseq.list.rel[[2]])[,"Phylum"])
-sample_data(pseq.list.clr[[2]]) %>% row.names()
+table(tax_table(pseq.bac)[,"Phylum"])
+table(tax_table(pseq.bac.rel)[,"Phylum"])
+sample_data(pseq.bac.clr) %>% row.names()
 
 # Saving on object in RData format
-# save(pseq.list.filt.0, file = "pseq.list.filt.0.RData")
-save(pseq.list.filt , file = "pseq.list.filt.RData")
+# save(pseq.bac.filt.0, file = "pseq.bac.filt.0.RData")
+save(pseq.bac.filt , file = "pseq.bac.filt.RData")
 save(pseq.func.filt , file = "pseq.func.filt.RData")
-# save(pseq.list.0.clr, file = "pseq.list.0.clr.RData")
-save(pseq.list.clr, file = "pseq.list.clr.RData")
+# save(pseq.bac.0.clr, file = "pseq.bac.0.clr.RData")
+save(pseq.bac.clr, file = "pseq.bac.clr.RData")
 save(pseq.func.clr, file = "pseq.func.clr.RData")
 
-pseq.list.filt %>% map(summarize_phyloseq)
+pseq.bac.filt %>% map(summarize_phyloseq)
 # microbiomeutilities::print_ps()
 
 ```
@@ -392,35 +268,31 @@ pseq.list.filt %>% map(summarize_phyloseq)
 ### Checking number of zOTUs before and after filtering
 
 ```{r}
-# save(pseq.list.filt.0, file = "pseq.list.filt.0.RData")
-load('pseq.list.RData')
-load('pseq.list.filt.RData')
+# save(pseq.bac.filt.0, file = "pseq.bac.filt.0.RData")
+load('pseq.bac.RData')
+load('pseq.bac.filt.RData')
 load('pseq.fun.RData')
 load('pseq.func.filt.RData')
-load('pseq.euk.list.RData')
-load('pseq.euk.list.filt.RData')
 ```
 
 
 ```{r}
 # total zOTUs
-pseq.list
-pseq.list.filt
+pseq.bac
+pseq.bac.filt
 pseq.fun
 pseq.func.filt
 
 # total reads community 
-for (i in 1:3) {
-  t.reads.all <- tibble(as(sample_data(pseq.list[[i]]), "data.frame"),
-                 TotalReads = sample_sums(pseq.list[[i]])) %>%
-  summarise(sum(TotalReads))
+t.reads.all.f <- tibble(as(sample_data(pseq.bac), "data.frame"),
+                 TotalReads = sample_sums(pseq.bac)) %>%
+                summarise(sum(TotalReads))
 
- t.reads.filt <- tibble(as(sample_data(pseq.list.filt[[i]]), "data.frame"),
-                 TotalReads = sample_sums(pseq.list.filt[[i]])) %>%
-  summarise(sum(TotalReads))
+t.reads.filt.f <- tibble(as(sample_data(pseq.bac.filt), "data.frame"),
+                 TotalReads = sample_sums(pseq.bac.filt)) %>%
+                  summarise(sum(TotalReads))
 
-print(paste(round(((t.reads.all - t.reads.filt)/t.reads.all)*100, 2), "% total reads removed - ", names(pseq.list[i])))
-}
+print(paste(round(((t.reads.all.f - t.reads.filt.f)/t.reads.all.f)*100, 2), "% total reads removed - picrust"))
 
 # total reads function 
 t.reads.all.f <- tibble(as(sample_data(pseq.fun), "data.frame"),
@@ -434,18 +306,7 @@ t.reads.filt.f <- tibble(as(sample_data(pseq.func.filt), "data.frame"),
 print(paste(round(((t.reads.all.f - t.reads.filt.f)/t.reads.all.f)*100, 2), "% total reads removed - picrust"))
 
 
-# total reads euk community 
-for (i in 1:3) {
-  t.reads.all <- tibble(as(sample_data(pseq.euk.list[[i]]), "data.frame"),
-                 TotalReads = sample_sums(pseq.euk.list[[i]])) %>%
-  summarise(sum(TotalReads))
 
- t.reads.filt <- tibble(as(sample_data(pseq.euk.list.filt[[i]]), "data.frame"),
-                 TotalReads = sample_sums(pseq.euk.list.filt[[i]])) %>%
-  summarise(sum(TotalReads))
-
-print(paste(round(((t.reads.all - t.reads.filt)/t.reads.all)*100, 2), "% total reads removed - ", names(pseq.euk.list[i])))
-}
 
 ```
 
