@@ -1,0 +1,1344 @@
+---
+title: "feature_selection"
+author: "Ricardo Silva"
+date: "02/09/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+# Packages and initial steps
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+# load the packages
+# main packs to start with
+pcks <- c('phyloseq', 'microbiome','microbiomeutilities' , "patchwork","ggtern","scales","ggforce",'tidyverse')
+
+if(sum(as.numeric(!pcks %in% installed.packages())) != 0){
+  installation <- pcks[!pcks %in% installed.packages()]
+  for(i in 1:length(installation)) {
+    install.packages(installation, dependencies = T)
+    break()}
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+} else {
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+}
+
+rm(pcks)
+```
+
+```{r packages and functions}
+# set working directory and seed
+setwd("~/R/git_hub/MH_2019/data")
+folder_path <- "~/R/git_hub/MH_2019/output/"
+
+source('~/R/git_hub/MH_2019/script/my_functions.R')
+source('~/R/git_hub/MH_2019/script/theme_publication.R')
+theme_set(theme_Publication_3())
+
+# set colors
+color_distance <- c("D0" = "deepskyblue2", 'D1' = 'brown1',  "D2" = "forestgreen", "D3" = "#440154FF", "D4" = "burlywood")
+# color_distance1 <- c('D1' = 'brown1',  "D2" = "forestgreen", "D3" = "#440154FF", "D4" = "burlywood")
+color_depth <- c('DP1'="darkorange",'DP2'="purple", "DP3" = "cyan4")
+cage_control <- friendly_cols
+
+# check the working directory
+current_directory <- getwd()
+paste("Working in directory:", current_directory)
+```
+
+# Aims
+
+Here, we used three approaches (Deseq2, ALDEx2, and  WGNCA) to select the ASVs most correlated to cage1, cage2 or control sites
+
+Lease 1 = B (T1 and T2)
+Lease 2 = G (T3, T4 and T5)
+
+# Data
+
+## meta and pseq objects
+
+```{r load data}
+# load object in RData format
+# 16S 
+# load("pseq.list.RData")
+load("pseq.list.filt.RData") # filtered data
+# load("pseq.list.clr.RData") # clr transformed data
+
+# picrust
+# load("pseq.fun.RData")
+load("pseq.func.filt.RData") # filtered data
+# load("pseq.func.clr.RData") # clr transformed data
+
+# meta
+meta <- read_csv(paste0(getwd(),"/meta.csv")) 
+
+# dir.create(paste0(folder_path, "data/feature_selection"))
+# dir.create(paste0(folder_path, "plots/feature_selection"))
+
+```
+
+# Feature selection
+
+## ALDEx2
+
+Get the OTUs with an effect size greater than |2|
+for example, in the condition conds.aldex.1.2 <- c(cond1, cond2) = cond1 vs cond2
+ASVs with a higher relative abundance in cond1 will have positive effect
+values, OTUs higher in cond2 will have negative effect values
+we can use Wilcoxon test results: wi.eBH (FDR), or raw p values (wi.ep, we.ep)
+from either test
+
+```{r aldex function}
+# function do run ALDEx2 between cage and control by each depth
+aldex_fun <- function(physeq, filter_statement){
+
+  s <- physeq %>% get_tibble("sam_data") %>%
+    filter(eval(rlang::parse_expr(filter_statement)))  %>% 
+    pull(column_id)
+  pseq.filt <- prune_samples(s, physeq)
+  # removing species not seen > 1 samples (prevalence > 1)
+  pseq = filter_taxa(pseq.filt, function(x) sum(x > 0) > 1, TRUE)
+  
+#  pseq <- filter_function(physeq, var1, var2, var3)
+#  pseq <- p.filt %>% subset_samples(site %in% c("cage_2", "cage_1"))
+  
+  asv_table <- pseq %>% get_tibble("otu_table") %>%
+    column_to_rownames("column_id")
+  TAXdf <- pseq %>% get_tibble("tax_table") %>%
+    column_to_rownames("column_id")
+  
+  # make a vector containing the two names of the conditions
+  # in the same order as in the column names
+  ## To know how many samples per depth
+  control <-  length(str_subset(colnames(asv_table), "C")) 
+  cage <- length(str_subset(colnames(asv_table), "T"))
+  
+  # make a data set with the conditions in right order
+  d.aldex <- asv_table %>% dplyr::select(starts_with("C") | starts_with("T") )
+  
+  # conditions (clusters)
+  conds.aldex <- c(rep("control", control), rep("cage", cage))
+  
+  ## CHECK this vector in your console by typing: 
+  conds.aldex
+  colnames(d.aldex)
+  # This should match the order and number of columns you have: 
+  waldo::compare(colnames(d.aldex), conds.aldex)
+  
+  # Calculate the Kruskal-Wallis test and glm ANOVA statistics
+  ## x.w <- ALDEx2::aldex.kw(x)
+  x.all <- ALDEx2::aldex(d.aldex , conds.aldex, mc.samples=128, test="t", effect=TRUE, include.sample.summary=FALSE, verbose=FALSE)
+  
+  # generate a datasetc with all OTUs with effect size > |0.5|
+  x.all.asv <- x.all %>% 
+    rownames_to_column(var = "ASV") %>%
+    left_join(TAXdf %>% rownames_to_column('ASV'))
+  
+  return(x.all.asv)
+}
+
+```
+
+```{r}
+# preparare the interaction before suing map
+# depth <- c("DP1", "DP2", "DP3")
+# sites <- c("Control", "cage_1", "cage_2") 
+# king <- names(pseq.list.filt)
+# 
+# exp <- cross_df(list(x = depth, y = sites, z= sites)) %>% 
+#   filter(y != z & z != "Control" & y !="cage_2") %>%
+#   mutate(expression = glue::glue("site %in% c('{y}', '{z}') & Depth == '{x}'")) %>%
+#   pull(expression)
+
+# preparare the interaction before suing map
+depth <- c("DP1", "DP2", "DP3")
+control <- c("Control") 
+cages <- c("cage_1", "cage_2")
+king <- names(pseq.list.filt)
+
+exp <- crossing(x = depth, y = control, z=cages) %>% 
+  mutate(expression = glue::glue("site %in% c('{y}', '{z}') & Depth == '{x}'"),
+         name.list = glue::glue("{x} - {y} vs {z}"))
+
+
+```
+
+## Control vs cages 1 and 2
+
+### 16S
+
+```{r ALDEx2 - 16s control vs cages}
+# Archaea
+aldex.arc <- map(exp$expression, ~aldex_fun(pseq.list.filt[[1]],.x)) %>%
+  set_names(exp$name.list)
+
+aldex.arc.filt <- aldex.arc  %>%
+  map2(.,names(.), ~mutate(., contrast = paste(.y), .before = 1)) %>%
+  map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+#  map2(.,names(.), ~add_row(., ASV = .y, .before = 1)) %>% 
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1)
+
+
+
+# Bacteria
+aldex.bac <- map(exp$expression, ~aldex_fun(pseq.list.filt[[2]],.x)) %>%
+  set_names(exp$name.list)
+
+aldex.bac.filt <- aldex.bac  %>%
+  map2(.,names(.), ~mutate(., contrast = paste(.y), .before = 1)) %>%
+  map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+#  map2(.,names(.), ~add_row(., ASV = .y, .before = 1)) %>% 
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1)
+
+
+
+
+# picrust
+aldex.func <- map(exp$expression, ~aldex_fun(pseq.func.filt,.x)) %>%
+  set_names(exp$name.list)
+
+aldex.func.filt <- aldex.func %>%
+  map2(.,names(.), ~mutate(., contrast = paste(.y), .before = 1)) %>%
+  map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+#  map2(.,names(.), ~add_row(., ASV = .y, .before = 1)) %>% 
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1)
+
+
+
+
+```
+
+
+## Cage 1 vs Cage 2
+
+```{r aldex function}
+# function to filter samples
+filter_function <- function(physeq, var1, var2, var3) {
+  s <- physeq %>%
+    get_tibble("sam_data") %>%
+    filter(site == !!(var1) | site == !!(var2)) %>%
+    filter(Depth == !!(var3)) %>%
+    pull(column_id)
+  pseq.subset <- prune_samples(s, physeq)
+    return(pseq.subset)
+}
+
+# function do run ALDEx2 between cage and control by each depth
+aldex_fun2 <- function(physeq, var1, var2, var3){
+
+  pseq.filt <- filter_function(physeq, var1, var2, var3)
+    # removing species not seen > 1 samples (prevalence > 1)
+  pseq = filter_taxa(pseq.filt, function(x) sum(x > 0) > 1, TRUE)
+  #  pseq <- p.filt %>% subset_samples(site %in% c("cage_2", "cage_1"))
+  TAXdf <- pseq %>% get_tibble("tax_table") %>%
+    column_to_rownames("column_id")
+  
+  # make a vector containing the two names of the conditions
+  # in the same order as in the column names
+  ## To know how many samples per depth
+  cond1 <- pseq %>% get_tibble("sam_data") %>% filter(site == var1) %>% count()
+  cond2 <- pseq %>% get_tibble("sam_data") %>% filter(site == var2) %>% count()
+
+  # make a data set with the conditions in right order
+  # d.aldex <- asv_table %>% dplyr::select(starts_with("C") | starts_with("T") )
+  
+  d.aldex <- pseq %>% get_tibble("otu_table") %>%
+    column_to_rownames("column_id") %>% 
+    select(order(colnames(.)))
+  
+  # conditions (clusters)
+  conds.aldex <- c(rep(glue::glue("{var1}"), cond1), rep(glue::glue("{var2}"), cond2))
+  
+  ## CHECK this vector in your console by typing: 
+  # return(conds.aldex)
+  # return(colnames(d.aldex))
+  # This should match the order and number of columns you have: 
+  # return(waldo::compare(colnames(d.aldex), conds.aldex))
+  
+  # Calculate the Kruskal-Wallis test and glm ANOVA statistics
+  ## x.w <- ALDEx2::aldex.kw(x)
+  x.all <- ALDEx2::aldex(d.aldex , conds.aldex, mc.samples=128, test="t", effect=TRUE, include.sample.summary=FALSE, verbose=FALSE)
+  
+  # generate a datasetc with all OTUs with effect size > |0.5|
+  x.all.asv <- x.all %>% 
+    rownames_to_column(var = "ASV") %>%
+    left_join(TAXdf %>% rownames_to_column('ASV'))
+  
+  return(x.all.asv)
+}
+
+
+```
+
+### 16S 
+
+```{r ALDEx2 - 16s control vs cages}
+# DP1
+aldex.cages.dp1 <- pseq.list.filt %>% 
+  set_names() %>%
+  map(.,~aldex_fun2(., "cage_1", "cage_2", "DP1"))
+
+aldex.cages.dp1.filt <- aldex.cages.dp1  %>%
+    map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP1 - cage_1 vs cage_2")
+
+
+# DP2
+aldex.cages.dp2 <- pseq.list.filt %>% 
+  set_names() %>%
+  map(.,~aldex_fun2(., "cage_1", "cage_2", "DP2"))
+
+aldex.cages.dp2.filt <- aldex.cages.dp2  %>%
+    map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP2 - cage_1 vs cage_2")
+
+
+# DP3
+aldex.cages.dp3 <- pseq.list.filt %>% 
+  set_names() %>% 
+  map(.,~aldex_fun2(., "cage_1", "cage_2", "DP3"))
+
+
+aldex.cages.dp3.filt <- aldex.cages.dp3  %>%
+    map(.,~filter(., effect >= 1 | effect <= -1) %>% arrange(effect)) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP3 - cage_1 vs cage_2")
+
+# bind_all
+all_aldex.cages <- bind_rows(aldex.cages.dp1.filt,
+            aldex.cages.dp2.filt, 
+            aldex.cages.dp3.filt)
+```
+
+### picrust
+
+```{r ALDEx2 - 16s control vs cages}
+# picrust
+# DP1
+aldex.func.cages.dp1 <- pseq.func.filt %>% 
+  aldex_fun2(., "cage_1", "cage_2", "DP1")
+
+aldex.func.cages.dp1.filt <- aldex.func.cages.dp1  %>%
+  filter(effect >= 1 | effect <= -1) %>% arrange(effect) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP1 - cage_1 vs cage_2")
+
+
+# DP2
+aldex.func.cages.dp2 <- pseq.func.filt %>% 
+  aldex_fun2(., "cage_1", "cage_2", "DP1")
+
+aldex.func.cages.dp2.filt <- aldex.func.cages.dp2  %>%
+  filter(effect >= 1 | effect <= -1) %>% arrange(effect) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP2 - cage_1 vs cage_2")
+
+
+# DP3
+aldex.func.cages.dp3 <- pseq.func.filt %>% 
+  aldex_fun2(., "cage_1", "cage_2", "DP3")
+
+aldex.func.cages.dp3.filt <- aldex.func.cages.dp3  %>%
+  filter(effect >= 1 | effect <= -1) %>% arrange(effect) %>%
+  bind_rows()  %>%
+  mutate(method = "ALDEx2", .before = 1,
+         contrast = "DP3 - cage_1 vs cage_2")
+
+# bind all
+
+picrust_aldex.cages <- bind_rows(aldex.func.cages.dp1.filt,
+                                 aldex.func.cages.dp2.filt,
+                                 aldex.func.cages.dp3.filt)
+```
+
+## Bind datasets
+
+```{r bind datasets}
+# 16s
+aldex_16s <- bind_rows(aldex.arc.filt, 
+                       aldex.bac.filt,
+                       all_aldex.cages %>% filter(Kingdom %in% c("Archaea","Bacteria"))) %>%
+  mutate(Depth = str_sub(contrast, 1,3), .before = 3)
+aldex_16s %>% 
+  write_csv(paste0(folder_path,"data/feature_selection/16s_aldex.csv"))
+
+
+
+# picrust
+picrust_aldex <- bind_rows(aldex.func.filt,
+                           picrust_aldex.cages) %>%
+   mutate(Depth = str_sub(contrast, 1,3), .before = 3)
+
+picrust_aldex %>%
+  write_csv(paste0(folder_path,"data/feature_selection/picrust_aldex.csv"))
+
+```
+
+
+```{r clean R env}
+rm(list = setdiff(ls(), c('folder_path','color_distance','color_depth','cage_control','pseq.list.filt',"pseq.func.filt", "meta")))
+source('~/R/git_hub/MH_2019/script/my_functions.R')
+source('~/R/git_hub/MH_2019/script/theme_publication.R')
+```
+
+# Deseq2
+
+### 16s and picrust
+
+Before running Deseq2 for 16S and PICRUst we keep taxa with prevalence > 1
+
+```{r deseq2 function}
+deseq_fun <- function(physeq, var1 ,value){
+  # filter get data
+  s <- physeq %>%
+    get_tibble("sam_data") %>%
+    filter(.[[var1]] == !!(value)) %>%
+    pull(column_id)
+  pseq.filt <- prune_samples(s, physeq)
+  # keep taxa with prevalence > 1
+  pseq <- filter_taxa(pseq.filt, function(x) sum(x > 0) > 1, TRUE)
+
+# tax table
+  TAXdf <-  pseq %>% get_tibble("tax_table", column_id = "ASV")
+  #cut alpha level at 0.05. We might want to change this later to higher level of significance if we get heaps of otu responding
+  #alpha can be changed to 0.005  or 0.01 if necessary
+  alpha = 0.05
+  # alpha = 0.001
+  # alpha = 0.01
+  lfc = 1 # lfcThreshold = 1, means 2-fold difference, (log2(2) = lfc). 
+  # It tests for ASVs/OTUs that show significant effects of treatment on gene counts more than doubling or less than twice, because 2^1=2.
+  #  lfc = 0.5849625 # means 1.5-fold difference, 
+  
+  #set up model 
+  # sets it up so that the first factor will be on the bottom, so > 0 means it is higher in the second factor < 0 means higher in first factor
+  sample_data(pseq)$site <- factor(sample_data(pseq)$site, levels = c("Control","cage_1","cage_2"))
+  
+  #look at lith Vs nonlith
+  dds <- phyloseq_to_deseq2(pseq, ~site) # converts the phyloseq data into a DESeqDataSet with dispersions estimated
+  dds <- DESeq2::DESeq(dds, test="Wald", fitType="parametric")
+  # DESeq2::resultsNames(dds) # there are more comparisons 
+  # 
+  # # get the results
+  # deseq_result <- DESeq2::results(dds,  lfcThreshold = lfc, alpha = alpha, altHypothesis = "greaterAbs") %>% 
+  #   as.data.frame() %>% rownames_to_column('ASV')  %>%
+  #   left_join(TAXdf %>% rownames_to_column('ASV'))
+  
+  #pull out model parameters for plotting
+  # sigtab_filt = deseq_result %>% 
+  #   filter(padj < alpha, abs(log2FoldChange) > 2) # logfoldchange = 2
+  
+  # for another comparisons 
+  # sets factors up -> log2FoldChange > 0 means it is more relatively abundant within the first factor and < 0 means it is more within the second factor
+  # So, a log2 fold change of 1.5 means that the gene’s expression is increased in the first factor by a multiplicative factor of 2^1.5 ≈ 2.82.
+  deseq_result.control.cage1 <- DESeq2::results(dds,  
+                                                lfcThreshold = lfc, 
+                                                alpha = alpha, 
+                                                altHypothesis = "greaterAbs", 
+                                                contrast=c("site","cage_1", "Control")) %>% 
+    as.data.frame() %>% 
+    rownames_to_column('ASV')  %>%
+    left_join(TAXdf) %>%
+    mutate(contrast = "cage_1 vs control",
+           Depth = glue::glue("{value}"), .before = 1) %>%
+    tibble()
+  
+  deseq_result.control.cage2 <- DESeq2::results(dds,  
+                                                lfcThreshold = lfc, 
+                                                alpha = alpha, 
+                                                altHypothesis = "greaterAbs", 
+                                                contrast=c("site","cage_2","Control")) %>%
+    as.data.frame() %>% 
+    rownames_to_column('ASV')  %>%
+    left_join(TAXdf) %>%
+    mutate(contrast = "cage_2 vs control",
+           Depth = glue::glue("{value}"), .before = 1) %>%
+    tibble()
+
+  
+  deseq_result.cages <- DESeq2::results(dds,  
+                                        lfcThreshold = lfc, 
+                                        alpha = alpha, 
+                                        altHypothesis = "greaterAbs", 
+                                        contrast=c("site","cage_1","cage_2")) %>% 
+    as.data.frame() %>% 
+    rownames_to_column('ASV')  %>%
+    left_join(TAXdf) %>%
+    mutate(contrast = "cage_1 vs cage_2",
+           Depth = glue::glue("{value}"), .before = 1) %>%
+    tibble()
+  
+  #pull out model parameters for plotting
+  deseq_results = bind_rows(deseq_result.control.cage1, 
+                            deseq_result.control.cage2,
+                            deseq_result.cages) 
+  
+  return(deseq_results)
+}
+
+# avoid errors in the middle of the function
+# deseq_fun = possibly(.f = deseq_fun, otherwise = NULL)
+```
+
+
+```{r deseq2 - run}
+pseq.list.filt.16s <- pseq.list.filt %>%
+  keep(names(.) %in% c("Archaea", "Bacteria"))
+
+# every gene contains at least one zero, cannot compute log geometric means
+deseq.16s.dp1 <- pseq.list.filt.16s %>% 
+  map(., ~deseq_fun(., "Depth", "DP1")) %>%
+  bind_rows() 
+
+deseq.func.dp1 <- deseq_fun(pseq.func.filt, "Depth", "DP1")
+
+# DP2
+deseq.16s.dp2 <- pseq.list.filt.16s %>% 
+  map(., ~deseq_fun(., "Depth", "DP2")) %>%
+  bind_rows()
+
+deseq.func.dp2 <- deseq_fun(pseq.func.filt, "Depth", "DP2")
+
+# DP3 # only possible for archaea and bacteria
+deseq.16s.dp3 <- pseq.list.filt.16s %>% 
+  map(., ~deseq_fun(., "Depth", "DP3")) %>%
+  bind_rows() 
+
+deseq.func.dp3 <- deseq_fun(pseq.func.filt, "Depth", "DP3")
+
+
+```
+
+# Bind datasets
+
+```{r deseq2 - filtering}
+# 16s
+deseq_asv_sig.16s <- bind_rows(deseq.16s.dp1,
+                       deseq.16s.dp2,
+                       deseq.16s.dp3) %>% 
+    filter(padj < 0.05 & abs(log2FoldChange) > 2) %>% # logfoldchange = 2
+  rename(contrast_deseq = contrast) %>%
+  mutate(method = "DESeq2",
+         contrast1 = case_when(contrast_deseq == "cage_1 vs control" ~ "Control vs cage_1", 
+                              contrast_deseq == "cage_2 vs control" ~ "Control vs cage_2",
+                              TRUE ~ as.character(contrast_deseq)), .before = 2) %>%
+  unite(contrast, Depth, contrast1, sep = " - ", remove = F) %>%
+  select(-contrast1)
+
+write_csv(deseq_asv_sig.16s, paste0(folder_path,"data/feature_selection/16s_deseq.csv"))
+
+# picrust
+deseq_picrust_sig <- bind_rows(deseq.func.dp1,
+                       deseq.func.dp2,
+                       deseq.func.dp3) %>% 
+    filter(padj < 0.05 & abs(log2FoldChange) > 2)  %>% # logfoldchange = 2
+  rename(contrast_deseq = contrast) %>%
+  mutate(method = "DESeq2",
+         contrast1 = case_when(contrast_deseq == "cage_1 vs control" ~ "Control vs cage_1", 
+                              contrast_deseq == "cage_2 vs control" ~ "Control vs cage_2",
+                              TRUE ~ as.character(contrast_deseq)), .before = 2) %>%
+  unite(contrast, Depth, contrast1, sep = " - ", remove = F) %>%
+  select(-contrast1)
+
+write_csv(deseq_picrust_sig, paste0(folder_path,"data/feature_selection/picrust_deseq.csv"))
+    
+# deseq_asv_sig = sigtab_filt %>%
+#     arrange(desc(log2FoldChange)) %>%
+#     mutate(Class = factor(Class,unique(Class))) # order by taxa for plotting
+
+```
+
+```{r clean R env}
+rm(list = setdiff(ls(), c('folder_path','color_distance','color_depth','cage_control','pseq.list.filt',"pseq.func.filt", "meta")))
+source('~/R/git_hub/MH_2019/script/my_functions.R')
+source('~/R/git_hub/MH_2019/script/theme_publication.R')
+```
+
+
+## loading tables
+```{r data}
+# 16s
+aldex_16s <-
+  read_csv(paste0(folder_path,"data/feature_selection/16s_aldex.csv"))
+
+deseq_16s <-
+  read_csv(paste0(folder_path,"data/feature_selection/16s_deseq.csv"))
+
+# picrust
+aldex_picrust <-
+  read_csv(paste0(folder_path,"data/feature_selection/picrust_aldex.csv"))
+
+deseq_picrust <-
+  read_csv(paste0(folder_path,"data/feature_selection/picrust_deseq.csv"))
+
+```
+
+## summary
+```{r}
+# total ASVs and funcitons
+# 16s
+total_16s <- aldex_16s %>% 
+  filter(Kingdom == "Bacteria") %>%
+  filter(effect < -1.5 | effect > 1.5) %>% 
+  group_by(contrast) %>% 
+  summarise(n()) %>%
+  bind_rows(summarise(.,
+                      across(where(is.numeric), sum),
+                      across(where(is.character), ~"TOTAL"))) %>%
+  add_row(contrast = 'Aldex2', .before = 1) %>%
+  add_row(contrast = 'Deseq2') %>%
+  bind_rows(deseq_16s %>% 
+               filter(Kingdom == "Bacteria") %>%
+              group_by(contrast) %>%
+              summarise(n()) %>%
+              bind_rows(summarise(.,
+                        across(where(is.numeric), sum),
+                        across(where(is.character), ~"TOTAL")))
+            ) %>%
+  rename(total = `n()`)
+
+write_csv(total_16s,paste0(folder_path,"data/feature_selection/total_16s.csv"))
+
+
+# picrust
+total_picrust <- aldex_picrust %>% 
+  filter(effect < -1.5 | effect > 1.5) %>%
+  group_by(contrast) %>% 
+  summarise(n()) %>%
+  bind_rows(summarise(.,
+                      across(where(is.numeric), sum),
+                      across(where(is.character), ~ "TOTAL"))) %>%
+  add_row(contrast = 'Aldex2', .before = 1) %>%
+  add_row(contrast = 'Deseq2') %>%
+  bind_rows(deseq_picrust %>%
+              group_by(contrast) %>% 
+              summarise(n()) %>%
+              bind_rows(summarise(.,
+                                  across(where(is.numeric), sum),
+                                  across(where(is.character), ~ "TOTAL")))
+            )
+
+
+write_csv(total_picrust,paste0(folder_path,"data/feature_selection/total_picrust.csv"))
+
+# by taxa
+
+
+```
+
+
+```{r checking}
+# tibble with ASVs common to both methods
+deseq_16s %>% inner_join(aldex_16s, by = c("ASV", "contrast"))
+
+# venn diagram
+venn::venn(list(aldex = aldex_16s$ASV, deseq = deseq_16s$ASV), zcolor = "red, blue", ggplot = T)
+
+deseq_16s %>% filter(if_any(everything(),~str_detect(.,"b_asv_1100")))
+aldex_16s %>% filter(if_any(everything(),~str_detect(.,"b_asv_1100")))
+```
+
+# Ternary plots
+
+Figure legend
+FIG 6 Ternary plots of per-site mean relative abundances of OTUs. Panels represent the 12 most abundant phyla. Each point represents an OTU, and its position indicates the proportion of its relative abundance at the different sites along the urban gradient. Points closer to the ternary plot corners indicate that a greater proportion of the total relative abundance of this OTU was found in this particular environment. Point colors indicate the phylum of the OTU. The red lines inside the ternary plot indicate the 60% level of relative abundance of each of the sites. Only the 275 OTUs with a per-site mean relative abundance of more than 0.1% are shown. <https://journals.asm.org/doi/10.1128/mSystems.00087-17#>
+
+### 16S
+
+```{r function}
+# https://yutannihilation.github.io/allYourFigureAreBelongToUs/ggtern/
+
+# https://online.ucpress.edu/elementa/article/9/1/00111/116754/Protist-communities-along-freshwater-marine
+
+tern_plot <- function(pseq, Depth,title)
+  {
+  tax_df <- pseq %>% 
+    get_tibble("tax_table", column_id = "ASV")
+
+  name_taxa <- tax_df %>% unite("Taxa", Phylum, Class, sep = "_")
+  n <- length(levels(as.factor(name_taxa$Taxa)))
+  my_colors <- tibble(colors = friendly_cols[1:n],
+                      name_taxa %>% distinct(Taxa))
+  
+  Kingdom <- tax_df %>% distinct(Kingdom) %>% pull
+  
+  asv_aldex <- aldex_16s %>% 
+    filter(Depth == !!(Depth)) %>%
+    filter(Kingdom == !!(Kingdom)) %>% 
+    filter(effect < -1.5 | effect > 1.5) %>% 
+    pull(ASV)
+  
+  asv_deseq <- deseq_16s %>% 
+    filter(Depth == !!(Depth)) %>%
+    filter(Kingdom == !!(Kingdom)) %>% 
+    pull(ASV)
+
+  tern_df <- pseq %>% 
+    transform("compositional") %>%
+    psmelt.dplyr() %>%
+    rename(ASV = OTU)
+
+  tern_df_dp <- tern_df %>%
+    filter(Depth == !!(Depth)) %>% 
+    group_by(ASV, site) %>% 
+    summarise(value = mean(Abundance)) %>% 
+    filter(ASV %in% c(asv_aldex, asv_deseq)) %>%
+    pivot_wider(c(ASV), names_from = "site", values_from = "value") %>%
+    mutate(sum = rowSums(across(where(is.numeric)))) %>%
+    filter(sum > 0) %>%
+    left_join(tax_df) %>%
+    mutate(Taxa = str_c(Phylum, Class,sep = "_"),
+           ASV = str_remove(ASV, "b_asv_")) %>%
+    left_join(my_colors)
+  
+  col <- as.character(tern_df_dp$colors)
+  names(col) <- as.character(tern_df_dp$Taxa)
+  
+  abund_tern <- tern_df_dp %>% 
+    select(-Kingdom, -Taxa) %>%
+    group_by(ASV, Phylum,Class,Order,Family,Genus) %>%
+    summarise(Control = Control/sum,
+              lease_1 = lease_1/sum,
+              lease_2 = lease_2/sum)
+  
+  # max <- tern_df_dp %>% 
+  #   left_join(tern_df_dp  %>%
+  #                select(ASV, cage_1, cage_2, Control) %>%
+  #                pivot_longer(!ASV, names_to = 'max_site', values_to = 'value') %>%
+  #                group_by(ASV) %>%
+  #                 # If you're worried about keeping ties:
+  #                slice(which.max(value))
+  #              ) %>%
+  #   dplyr::select(ASV, max_site, Phylum:Genus)
+  
+  # plot
+  n  = length(tern_df_dp$ASV)   #Number of Data Points
+  nv = 0.015  #Vertical Adjustment
+  pn = position_nudge_tern(y=nv,x=-nv/2,z=-nv/2)
+  
+  plot <- tern_df_dp %>%
+    ggtern(aes(x = lease_1, y = Control, z = lease_2)) + 
+    geom_point(aes(size=(lease_1 + lease_2 + Control), color = Taxa)) +
+    theme_Publication_3() +
+    theme_showarrows() +
+    theme_nomask() + #Allow Labels to Spool Over Edges
+    geom_Lline(Lintercept=0.60,color="red") +
+    geom_Tline(Tintercept=.6, colour='red') + 
+    geom_Rline(Rintercept=.6, colour='red') +
+    #  geom_text(position = pn, aes(label = ASV), check_overlap = T, hjust = 1, vjust = 1) +
+    scale_size(name="Mean Relative Abundance") +
+    scale_color_manual(name = "Phylum_Class", values = col, 
+                       guide = guide_legend(label.theme = element_text(angle = 0, face = "italic"))) +
+    labs(title = paste(title)) + 
+    theme(plot.title = element_text(hjust=0.5))
+  
+  return(list(plot,abund_tern))
+}
+
+```
+
+
+```{r plot ternary}
+# prepare the data
+load("pseq.list.filt.RData") # filtered data
+# plot ternary plots
+tern_surface <- tern_plot(pseq.list.filt[[2]], "DP1", "Surface")
+tern_mid <- tern_plot(pseq.list.filt[[2]], "DP2", "Intermediate")
+tern_bottom <- tern_plot(pseq.list.filt[[2]], "DP3", "Bottom")
+
+# get the a table with the ASV ASV in each site
+tern_surface[[2]] %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_surface.csv"))
+tern_mid[[2]]  %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_mid.csv"))
+tern_bottom[[2]]  %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_bottom.csv"))
+
+tern_bottom[[2]] %>% filter(ASV == 327)
+
+# make a common legend
+df_colors <- bind_rows(tern_surface[[1]]$data %>% distinct(Taxa, colors),
+tern_mid[[1]]$data %>% distinct(Taxa, colors),
+tern_bottom[[1]]$data %>% distinct(Taxa, colors)) %>%
+  distinct(Taxa, colors)
+
+col <- as.character(df_colors$colors)
+names(col) <- as.character(df_colors$Taxa)
+
+# make a simple plot and get the legend
+plot <- df_colors %>% 
+  mutate(n = 1) %>%  
+  ggplot(aes(n, Taxa, color = Taxa)) +
+  geom_point() +
+  scale_color_manual(name = "Phylum_Class", values = col,
+                     guide = guide_legend(label.theme = element_text(angle = 0, face = "italic"))) + theme_Publication_3()
+# get legend using ggpubr
+legend <- ggpubr::get_legend(plot)
+
+# combined plots
+a <- tern_surface[[1]] + theme(legend.position = "none") 
+b <- tern_mid[[1]] + theme(legend.position = "none")
+c <- tern_bottom[[1]] + theme(legend.position = "none")
+
+# plotmusing grid.arrange
+layout_matrix <- matrix(c(1, 2, 3, 4), nrow = 2, byrow = TRUE)
+grid.arrange(a, b, c, legend, layout_matrix = layout_matrix)
+
+# save as pdf (15.32 x 9.8 in)
+
+# save plots separately
+ggsave(paste0(folder_path,"plots/feature_selection/tern_surface.tiff"), compression = "lzw", tern_surface[[1]])
+ggsave(paste0(folder_path,"plots/feature_selection/tern_mid.tiff"), compression = "lzw", tern_mid[[1]])
+ggsave(paste0(folder_path,"plots/feature_selection/tern_bottom.tiff"), compression = "lzw", tern_bottom[[1]])
+
+
+```
+
+### Picrust
+```{r function}
+# Eric 2021
+eric_2021 <- read_csv("eric_2021.csv") %>% rename(ASV = MetaCyc) %>% select(ASV, Super.classes)
+#eric_2021 %>% filter(if_any(everything(), ~str_detect(.,"Secondary")))
+
+# https://yutannihilation.github.io/allYourFigureAreBelongToUs/ggtern/
+
+# https://online.ucpress.edu/elementa/article/9/1/00111/116754/Protist-communities-along-freshwater-marine
+# picrust
+aldex_picrust <-
+  read_csv(paste0(folder_path,"data/feature_selection/picrust_aldex.csv")) %>%
+  left_join(eric_2021) %>%
+  # replace NAs
+  mutate(Super.classes = coalesce(Super.classes, pathway))
+
+deseq_picrust <-
+  read_csv(paste0(folder_path,"data/feature_selection/picrust_deseq.csv")) %>%
+  left_join(eric_2021)  %>%
+  # replace NAs
+  mutate(Super.classes = coalesce(Super.classes, pathway))
+
+tern_plot_picrust <- function(pseq, Depth,title)
+  {
+tax_df <- pseq %>% 
+  get_tibble("tax_table", column_id = "ASV") %>%
+  left_join(eric_2021) %>%
+  # replace NAs
+  mutate(Super.classes = coalesce(Super.classes, pathway))
+
+n <- length(levels(as.factor(tax_df$Super.classes)))
+my_colors <- tibble(colors = friendly_cols[1:n],
+                    tax_df %>% distinct(Super.classes))
+
+Kingdom <- "Functional Annotations"
+
+asv_aldex <- aldex_picrust %>% 
+  filter(Depth == !!(Depth)) %>%
+  filter(effect < -1.5 | effect > 1.5) %>% 
+  pull(ASV)
+
+asv_deseq <- deseq_picrust %>% 
+  filter(Depth == !!(Depth)) %>%
+  pull(ASV)
+
+tern_df <- pseq %>% 
+    transform("compositional") %>%
+    psmelt.dplyr() %>%
+    rename(ASV = OTU)
+
+tern_df_dp <- tern_df %>%
+    filter(Depth == !!(Depth)) %>% 
+    group_by(ASV, site) %>% 
+    summarise(value = mean(Abundance)) %>% 
+    filter(ASV %in% c(asv_aldex, asv_deseq)) %>%
+    pivot_wider(c(ASV), names_from = "site", values_from = "value") %>%
+  mutate(sum = rowSums(across(where(is.numeric)))) %>%
+  filter(sum > 0) %>%
+  left_join(tax_df) %>%
+  left_join(my_colors)
+
+col <- as.character(tern_df_dp$colors)
+names(col) <- as.character(tern_df_dp$Super.classes)
+
+abund_tern <- tern_df_dp %>% 
+  group_by(ASV, description, pathway, Super.classes, ontology) %>%
+  summarise(Control = Control/sum,
+            lease_1 = lease_1/sum,
+            lease_2 = lease_2/sum)
+
+# plot
+n  = length(tern_df_dp$ASV)   #Number of Data Points
+nv = 0.015  #Vertical Adjustment
+pn = position_nudge_tern(y=nv,x=-nv/2,z=-nv/2)
+
+plot <- tern_df_dp %>%
+  mutate_if(is.character, as.factor) %>%
+  ggtern(aes(x = lease_1, y = Control, z = lease_2)) + 
+  geom_point(aes(size=(lease_1 + lease_2 + Control), color = Super.classes)) +
+  theme_Publication_3() +
+  theme_showarrows() +
+  theme_nomask() + #Allow Labels to Spool Over Edges
+  geom_Lline(Lintercept=0.60,color="red") +
+  geom_Tline(Tintercept=.6, colour='red') + 
+  geom_Rline(Rintercept=.6, colour='red') +
+#  geom_text(position = pn, aes(label = pathway), check_overlap = T, hjust = 1, vjust = 1) +
+  scale_size(name="Mean Relative Abundance")+
+  scale_color_manual(name = "pathway", values = col) +
+  labs(title = paste(title)) + 
+  theme(plot.title = element_text(hjust=0.5))
+
+return(list(plot,abund_tern))
+}
+
+
+```
+
+
+```{r plot ternary}
+# prepare the data
+load("pseq.func.filt.RData") # filtered data
+# plot ternary plots
+tern_surface <- tern_plot_picrust(pseq.func.filt, "DP1", "Surface")
+tern_mid <- tern_plot_picrust(pseq.func.filt, "DP2", "Intermediate")
+tern_bottom <- tern_plot_picrust(pseq.func.filt, "DP3", "Bottom")
+
+# get the a table with the ASV in each site
+tern_surface[[2]] %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_surface_picrust.csv"))
+tern_mid[[2]]  %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_mid_picrust.csv"))
+tern_bottom[[2]]  %>% write_csv(paste0(folder_path,"data/feature_selection/tern_plot_bottom_picrust.csv"))
+
+# make a common legend
+df_colors <- bind_rows(tern_surface[[1]]$data %>% distinct(pathway, colors),
+tern_mid[[1]]$data %>% distinct(pathway, colors),
+tern_bottom[[1]]$data %>% distinct(pathway, colors)) %>%
+  distinct(pathway, colors) %>%
+  mutate(pathway = str_to_title(pathway))
+
+col <- as.character(df_colors$colors)
+names(col) <- as.character(df_colors$pathway)
+  
+plot <- df_colors %>% mutate(n = 1) %>%
+  ggplot(aes(n, pathway, color = pathway)) +
+  geom_point() +
+  scale_color_manual(name = "Pathway", values = col) +
+  theme(legend.text=element_text(size=12),
+        legend.title=element_text(size=13)) +
+  theme_Publication_3()
+
+# Using the cowplot package
+legend <-  ggpubr::get_legend(plot)
+
+# combined plots
+a <- tern_surface[[1]] + theme(legend.position = "none") 
+b <- tern_mid[[1]] + theme(legend.position = "none")
+c <- tern_bottom[[1]] + theme(legend.position = "none")
+
+layout_matrix <- matrix(c(1, 2, 3, 4), nrow = 2, byrow = TRUE)
+grid.arrange(a , b, c, legend, layout_matrix = layout_matrix)
+
+# save as pdf (15.32 x 9.8 in)
+
+
+# save plts separately
+ggsave(paste0(folder_path,"plots/feature_selection/tern_surface_picrust.tiff"), compression = "lzw", tern_surface[[1]])
+ggsave(paste0(folder_path,"plots/feature_selection/tern_mid_picrust.tiff"), compression = "lzw", tern_mid[[1]])
+ggsave(paste0(folder_path,"plots/feature_selection/tern_bottom_picrust.tiff"), compression = "lzw", tern_bottom[[1]])
+
+```
+
+## Number of ASVs - bar plots
+
+```{r}
+site <- "lease_1"
+site <- "lease_2"
+site <- "Control"
+
+n_asv_16s <- asv_surface %>%
+  arrange(desc(.data[[site]])) %>%
+  filter(.data[[site]] >= 0.6) %>%
+  mutate(depth = "surface") %>%
+  bind_rows(asv_mid %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "middle")) %>%
+  bind_rows(asv_bottom %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "bottom")) %>%
+  group_by(depth, Phylum, Class,Order,Family) %>%
+  count(Genus,  sort = TRUE) 
+
+n_asv_16s %>% write_csv(paste0(folder_path,"data/feature_selection/n_asv_",site,".csv"))
+```
+
+
+#### 16S
+```{r}
+asv_surface <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_surface.csv"))
+asv_mid <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_mid.csv"))
+asv_bottom <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_bottom.csv"))
+
+plot_bar_dif_abund <- function(site){
+plot <- asv_surface %>% 
+  arrange(desc(.data[[site]])) %>% 
+  filter(.data[[site]] >= 0.6) %>% 
+  mutate(depth = "surface") %>%
+  bind_rows(asv_mid %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "middle")) %>%
+  bind_rows(asv_bottom %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "bottom")) %>%
+  # filter(if_any(everything(), ~str_detect(.,"unknown")))
+ # select(-ASV) %>%
+  group_by(depth, Phylum, Class,Order,Family) %>%
+  count(Genus,  sort = TRUE) %>%
+  ungroup() %>%
+   mutate(Genus =  str_c(Class, Genus, sep = "_"),
+          depth = factor(depth, levels = c("surface", "middle", "bottom")),
+          Genus = tidytext::reorder_within(Genus,n, depth)) %>%
+ # mutate(Genus = fct_reorder(Genus,desc(n))) %>%
+  ggplot(aes(x = Genus, y = n, fill = depth)) +
+  geom_col(alpha = 0.7) +
+   #      geom_text(aes(label = str_c(Order, Family, sep = "_")), y=0.1, hjust=0) +
+         labs(y = "number of ASVs",
+              x = "Class_Genus") +
+        facet_grid(depth~., scales = "free") +
+        coord_flip() +
+        tidytext::scale_x_reordered() +
+        labs(title = paste("Bacteria - ", site)) +
+         scale_fill_manual(values = c("surface" = "darkorange", "middle" = "purple", "bottom" = "cyan4")) +
+        theme(legend.position = "bottom",
+              axis.text.y = element_text(face = "italic"))
+return(plot)
+}
+
+p1 <- plot_bar_dif_abund("lease_1")
+p2 <- plot_bar_dif_abund("lease_2")
+p3 <- plot_bar_dif_abund("Control")
+
+ggsave(p1, filename = paste0(folder_path,"plots/feature_selection/n_asvs_lease1.tiff"), compression = "lzw", height = 12, width = 8)
+ggsave(p2, filename = paste0(folder_path,"plots/feature_selection/n_asvs_lease2.tiff"), compression = "lzw", height = 11, width = 8)
+ggsave(p3, filename = paste0(folder_path,"plots/feature_selection/n_asvs_control.tiff"), compression = "lzw", height = 11, width = 8)
+
+```
+
+#### Picrust
+
+```{r}
+site <- "lease_1"
+site <- "lease_2"
+site <- "Control"
+
+n_asv_pic <- asv_surface %>%
+  arrange(desc(.data[[site]])) %>%
+  filter(.data[[site]] >= 0.6) %>%
+  mutate(depth = "surface") %>%
+  bind_rows(asv_mid %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "middle")) %>%
+  bind_rows(asv_bottom %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "bottom")) %>%
+  group_by(depth, Super.classes, description,ontology) %>%
+  count(pathway,  sort = TRUE) 
+
+n_asv_pic %>% write_csv(paste0(folder_path,"data/feature_selection/n_picrust_",site,".csv"))
+```
+
+```{r}
+fun_surface <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_surface_picrust.csv"))
+fun_mid <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_mid_picrust.csv"))
+fun_bottom <- read_csv(paste0(folder_path,"data/feature_selection/tern_plot_bottom_picrust.csv"))
+
+site <- "lease_1"
+
+plot_bar_dif_abund_pic <- function(site){
+plot <- fun_surface %>% 
+  arrange(desc(.data[[site]])) %>% 
+  filter(.data[[site]] >= 0.6) %>% 
+  mutate(depth = "surface") %>%
+  bind_rows(fun_mid %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "middle")) %>%
+  bind_rows(fun_bottom %>%
+              arrange(desc(.data[[site]])) %>%
+              filter(.data[[site]] >= 0.6) %>%
+              mutate(depth = "bottom")) %>%
+  # filter(if_any(everything(), ~str_detect(.,"unknown")))
+  
+ # select(-ASV) %>%
+  group_by(depth) %>%
+  count(Super.classes) %>%
+  ungroup() %>%
+   mutate(depth = factor(depth, levels = c("surface", "middle", "bottom")),
+          Super.classes = tidytext::reorder_within(Super.classes,n, depth)) %>%
+  ggplot(aes(x = Super.classes, y = n, fill = depth)) +
+  geom_col(alpha = 0.7) +
+   #      geom_text(aes(label = str_c(Order, Family, sep = "_")), y=0.1, hjust=0) +
+         labs(y = "number of pathways",
+              x = "Pathways") +
+        facet_grid(depth~., scales = "free") +
+        coord_flip() +
+        tidytext::scale_x_reordered() +
+   #     scale_fill_manual(values = my_colors) +
+        labs(title = paste("Functional annotations - ", site)) +
+         scale_fill_manual(values = c("surface" = "darkorange", "middle" = "purple", "bottom" = "cyan4")) +
+        theme(legend.position = "bottom")
+return(plot)
+}
+
+
+p1 <- plot_bar_dif_abund_pic("lease_1")
+# p2 <- plot_bar_dif_abund_pic("lease_2")
+p3 <- plot_bar_dif_abund_pic("Control")
+
+ggsave(p1, filename = paste0(folder_path,"plots/feature_selection/n_picrust_lease1.tiff"), compression = "lzw")
+#ggsave(p2, filename = paste0(folder_path,"plots/feature_selection/n_picrust_lease2.tiff"), compression = "lzw")
+ggsave(p3, filename = paste0(folder_path,"plots/feature_selection/n_picrust_control.tiff"), compression = "lzw")
+```
+
+# Upset plots
+
+<https://github.com/krassowski/complex-upset>
+
+```{r}
+library(ComplexUpset)
+library(UpSetR)
+library(ggupset)
+
+# wi.eBH = FDR (expected Benjamini-Hochberg adjusted p-value) of the Wilcox Rank Sum test
+# wi.ep = p-value of the Wilcox Rank Sum test
+aldex_16s.f <- aldex_16s %>% filter(wi.eBH < 0.05 | wi.ep < 0.01)
+
+# UpSetR
+select_16s <- list(aldex = aldex_16s.f$ASV,
+                     deseq2 = deseq_16s$ASV)
+
+select_16s.upsetR <- fromList(select_16s)
+
+upset(fromList(select_16s), order.by = "freq")
+
+upset(as.data.frame(select_16s.upsetR), main.bar.color = 'gray36', 
+      sets.bar.color = color[c(1)], matrix.color = 'gray36', 
+      order.by = 'freq', empty.intersections = 'on', 
+      queries = list(list(query = intersects, params = list('selbal'), 
+                          color = color[5], active = T), 
+                     list(query = intersects, params = list('clr_lasso'), 
+                          color = color[2], active = T)))
+
+movies <- read.csv(system.file("extdata", "movies.csv", package = "UpSetR"), 
+    header = T, sep = ";")
+
+t <- bind_rows(aldex_16s.f, deseq_16s)
+
+# ggupset
+t %>% select(method, ASV) %>%
+  distinct(ASV, method, .keep_all = T) %>%
+  group_by(ASV) %>%
+  summarise(method = list(method)) %>%
+  ggplot(aes(x = method)) +
+    geom_bar() +
+    scale_x_upset()
+
+t %>% select(ASV, Depth) %>%
+  distinct(ASV, Depth, .keep_all = T) %>%
+  group_by(ASV) %>%
+  summarise(method = list(Depth)) %>%
+  ggplot(aes(x = method)) +
+    geom_bar() +
+    scale_x_upset()
+
+# ComplexUpset
+t1 <- t %>% select(method, ASV) %>%
+  distinct(ASV, method) %>%
+  mutate(present = 1) %>% # create a dummy column
+  pivot_wider(names_from = method, values_from = present) %>% # turn 'Sp' column into 'SP1' and 'SP2'
+  mutate_at(vars(ALDEx2, DESeq2), ~if_else(is.na(.), 0, 1)) # fill in missing columns with 0
+
+
+met = colnames(t1)[2:3]
+t1[met] = t1[met] == 1
+
+t2 <- t1 %>% left_join(t) %>% distinct(ASV, .keep_all = T)
+
+t2 %>% filter(ALDEx2 == "TRUE" & DESeq2 == "TRUE") %>% distinct(contrast, effect, Phylum, Class, Family, Genus)
+
+ComplexUpset::upset(t2, met, name = "Methods") & theme_Publication_3()
+
+
+
+```
+
+# Bar plots
+
+```{r}
+
+taxon = "Genus"
+kingdom = "Bacteria"
+
+plot_aldex$plot
+
+plot_aldex <- aldex_16s %>% 
+    mutate(effect_size = if_else(effect > 0, "first factor", "second factor")) %>% 
+  filter(effect < -1.5 | effect > 1.5) %>%
+  left_join(deseq_16s, by = "ASV") %>%
+  mutate(Genus = str_c(Phylum, Genus,sep = "_")) %>%
+  filter(Kingdom == kingdom) %>%
+  group_by(contrast) %>% 
+  nest %>% 
+  mutate(grouped = map(data, ~group_by(., Phylum, Family, Class, .data[[taxon]], effect_size) %>%
+        dplyr::count(ASV) %>%
+        summarise(n = sum(n)) %>%
+        ungroup())) %>%
+  mutate(plot = map2(grouped, contrast,~mutate(.,'{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+        # select only the op 10 in n
+        dplyr::slice_max(n, n=15) %>%
+      #  filter(.data[[taxon]] != "unknown") %>%
+        ggplot(aes(x = .data[[taxon]], y = n ,fill = effect_size)) + 
+        geom_bar(stat = "identity" , alpha = 0.7) +
+        geom_text(aes(color = "black",label = str_c(Class, Family, sep = "_")), y=0.1, hjust=0) +
+        coord_flip() +
+        labs(y = "number of ASVs",
+             x = "Phylum_Genus") +
+   #     scale_fill_manual(values = my_colors) +
+        labs(title = paste(kingdom," | ",taxon," - ", .y))+
+        theme(legend.position = "bottom") +
+        scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+        labs(fill = "Where is higher?" ) +
+        guides(fill = guide_legend(nrow=2))))
+
+
+plot_aldex$plot[[1]] %>%
+  ggplot(aes(x = Genus, y = n, fill = effect_size)) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+        geom_text(aes(color = ,label = str_c(Class, Family, sep = "_")), y=0.1, hjust=0) +
+        coord_flip() +
+        labs(y = "number of ASVs",
+             x = "Phylum_Genus") +
+   #     scale_fill_manual(values = my_colors) +
+        labs(title = paste(kingdom," | ",taxon," - ", .y))+
+        theme(legend.position = "bottom") +
+        scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+        labs(fill = "Where is higher?" ) +
+        guides(fill = guide_legend(nrow=2))
+  
+
+# plot_aldex$plot
+
+
+# aldex_16s %>%
+#   filter(effect < -1.5 | effect > 1.5) %>%
+#   filter(Kingdom == kingdom) %>%
+#   mutate(effect_size = if_else(effect > 1.5, "positive", "negative")) %>%
+#   group_by(Phylum, .data[[taxon]], effect_size) %>%
+#              dplyr::count(ASV) %>%
+#         summarise(n = sum(n)) %>%
+#         ungroup()
+#         filter(.data[[taxon]] != "unknown") %>%
+#         #   arrange(desc(n)) %>%
+#         mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>%
+#         # select only the op 10 in n
+#         dplyr::slice_max(n, n=15) %>%
+#         ggplot(aes(x = .data[[taxon]], y=n ,fill = effect_size)) +
+#         geom_bar(stat = "identity" , alpha = 0.7) +
+#         geom_text(aes(color = ,label = str_c(Phylum, Family, sep = "_")), y=0.1, hjust=0) +
+#         coord_flip() +
+#         labs(y = "number of ASVs related to the module") +
+#    #     scale_fill_manual(values = my_colors) +
+#         labs(title = paste(kingdom," | ",taxon," - ", "ALDEx2"))+
+#         theme(legend.position = "bottom") +
+#         scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+#         labs(fill = "Effect Size (+ or - ?)" ) +
+#         guides(fill=guide_legend(nrow=2))
+
+
+plot_deseq <- deseq_16s %>% 
+  filter(Kingdom == kingdom) %>%
+  mutate(log2FoldChange = if_else(log2FoldChange > 0, "second factor", "first factor")) %>%
+   mutate(Genus = str_c(Phylum, Genus,sep = "_")) %>%
+  group_by(contrast) %>% 
+  nest %>% 
+  mutate(grouped = map(data, ~group_by(., Phylum, Family, Class, .data[[taxon]], log2FoldChange) %>%
+        dplyr::count(ASV) %>%
+        summarise(n = sum(n)) %>%
+        ungroup())) %>%
+  mutate(plot = map2(grouped, contrast,~mutate(.,'{taxon}' := fct_reorder(.data[[taxon]],n)) %>% 
+        # select only the op 10 in n
+        dplyr::slice_max(n, n=15) %>%
+      #  filter(.data[[taxon]] != "unknown") %>%
+        ggplot(aes(x = .data[[taxon]], y=n ,fill = log2FoldChange)) + 
+        geom_bar(stat = "identity" , alpha = 0.7) +
+        geom_text(aes(color = ,label = str_c(Class, Family, sep = "_")), y=0.1, hjust=0) +
+        coord_flip() +
+        labs(y = "number of ASVs",
+             x = "Phylum_Genus") +
+   #     scale_fill_manual(values = my_colors) +
+        labs(title = paste(kingdom," | ",taxon," - ", .y))+
+        theme(legend.position = "bottom") +
+        scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+        labs(fill = "Where is higher?" ) +
+        guides(fill=guide_legend(nrow=2))))
+
+# plot_deseq$plot
+
+# deseq_16s %>%
+#   filter(Kingdom == kingdom) %>%
+#   mutate(log2FoldChange = if_else(log2FoldChange > 0, "second factor", "first factor")) %>%
+#    mutate(Genus = str_c(Phylum, Genus,sep = "_")) %>%
+#   group_by(Phylum, Family, Class, .data[[taxon]], log2FoldChange) %>%
+#              dplyr::count(ASV) %>%
+#         summarise(n = sum(n)) %>%
+#         ungroup() %>%
+#    #     filter(.data[[taxon]] != "unknown") %>%
+#         #   arrange(desc(n)) %>%
+#         mutate('{taxon}' := fct_reorder(.data[[taxon]],n)) %>%
+#         # select only the op 10 in n
+#         dplyr::slice_max(n, n=15) %>%
+#         ggplot(aes(x = .data[[taxon]], y=n ,fill = log2FoldChange)) +
+#         geom_bar(stat = "identity" , alpha = 0.7) +
+#         geom_text(aes(color = ,label = str_c(Phylum, Family, sep = "_")), y=0.1, hjust=0) +
+#         coord_flip() +
+#         labs(y = "number of ASVs related to the module") +
+#    #     scale_fill_manual(values = my_colors) +
+#         labs(title = paste(kingdom," | ",taxon," - ", "DESeq2"))+
+#         theme(legend.position = "bottom") +
+#         scale_fill_manual(values = c("#b6dfe2", "#0A537D")) +
+#         labs(fill = "Where is higher?" ) +
+#         guides(fill=guide_legend(nrow=2))
+
+
+```
