@@ -2,7 +2,7 @@
 
 This repository contains scripts used to process and analyse the data as well as to reproduce the figures using 16S rRNA amplicon sequencing data for our paper:
 
-[Composition and functionality of bacterioplankton communities in marine coastal zones adjacent to finfish aquaculture](https://www.biorxiv.org/content/10.1101/2022.03.07.483349v1)
+Preprint: [Composition and functionality of bacterioplankton communities in marine coastal zones adjacent to finfish aquaculture](https://www.biorxiv.org/content/10.1101/2022.03.07.483349v1)
 
 
 
